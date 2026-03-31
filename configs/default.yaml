@@ -1,0 +1,33 @@
+inputs:
+  sky_alm: inputs/sky/example_sky_alms.npz
+  beams_dir: inputs/beams
+  rimo_files:
+    - inputs/RIMOs/RIMO_HFI_npipe5v16_symmetrized.fits
+    - inputs/RIMOs/RIMO_LFI_npipe5_symmetrized.fits
+  pointing:
+    npz_glob: inputs/pointing/*.npz
+
+detector_selection:
+  channel: null
+  detectors: []
+  include_regex:
+    - "^(100|143)-"
+  exclude_regex: []
+
+resampling:
+  angular_eps: 1.0e-10
+
+convolution:
+  lmax: 1024
+  kmax: 16
+  nthreads: 0
+  separate: false
+  epsilon: 1.0e-5
+
+map:
+  nside: 512
+  nest: false
+  output_prefix: pquick_demo
+
+output:
+  output_dir: outputs
