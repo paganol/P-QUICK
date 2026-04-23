@@ -1,0 +1,42 @@
+inputs:
+  sky_alm: inputs/sky/alms_cmb0000.fits
+  beams_dir: inputs/beams
+  rimo_files:
+    - inputs/RIMOs/RIMO_HFI_npipe5v16_symmetrized.fits
+  pointing:
+    npz_glob: inputs/pointings/processed_od_009[1-9].npz
+
+detector_selection:
+  channel: null
+  detectors:
+    - 100-1a
+    - 100-1b
+    - 100-2a
+    - 100-2b
+    - 100-3a
+    - 100-3b
+    - 100-4a
+    - 100-4b
+  include_regex: []
+  exclude_regex: []
+
+resampling:
+  angular_eps: 1.0e-10
+  coordinate_system: galactic
+
+convolution:
+  lmax: 1024
+  mmax: 6
+  nthreads: 0
+  epsilon: 1.0e-5
+  chunks: 1
+
+map:
+  nside: 512
+  nest: false
+  output_prefix: od91_99_100ghz_nside1024
+
+output:
+  output_dir: outputs
+
+verbose: true

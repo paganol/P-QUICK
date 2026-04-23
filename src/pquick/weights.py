@@ -60,4 +60,16 @@ def _weight_key(detector: str) -> str:
 
 
 def detector_map_weight(detector: str, default: float = 1.0) -> float:
+    """Return the inverse-noise map weight for a Planck detector.
+
+    The detector name is normalised by stripping polarisation suffixes (``M``/``S`` for
+    LFI, ``a``/``b`` for HFI) before looking up the value in :data:`DETECTOR_WEIGHTS`.
+
+    Args:
+        detector: Detector name (e.g. ``"100-1a"``, ``"LFI27M"``).
+        default: Value returned when the detector is not in the table.
+
+    Returns:
+        Float map weight, or *default* if the detector is unknown.
+    """
     return float(DETECTOR_WEIGHTS.get(_weight_key(detector), default))

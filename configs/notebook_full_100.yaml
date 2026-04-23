@@ -1,0 +1,33 @@
+inputs:
+  sky_alm: inputs/sky/notebook_demo_alms.npz
+  beams_dir: inputs/beams
+  rimo_files:
+  - inputs/RIMOs/RIMO_HFI_npipe5v16_symmetrized.fits
+  - inputs/RIMOs/RIMO_LFI_npipe5_symmetrized.fits
+  pointing:
+    npz_glob: inputs/pointings/processed_od_*.npz
+detector_selection:
+  channel: null
+  detectors:
+  - 100-1a
+  - 100-1b
+  - 100-2a
+  - 100-2b
+  include_regex: []
+  exclude_regex: []
+resampling:
+  angular_eps: 1.0e-10
+  coordinate_system: galactic
+convolution:
+  lmax: 16
+  mmax: 6
+  nthreads: 0
+  separate: false
+  epsilon: 1.0e-05
+  chunks: 1
+map:
+  nside: 1024
+  nest: false
+  output_prefix: full_100_demo_nside1024
+output:
+  output_dir: outputs

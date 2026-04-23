@@ -16,13 +16,15 @@ detector_selection:
 
 resampling:
   angular_eps: 1.0e-10
+  coordinate_system: galactic
 
 convolution:
   lmax: 1024
-  kmax: 16
+  mmax: 16
   nthreads: 0
   separate: false
   epsilon: 1.0e-5
+  chunks: 1
 
 map:
   nside: 512

@@ -58,6 +58,7 @@ Outputs are written under `output.output_dir` as:
 1. `<prefix>_iqu.fits`
 2. `<prefix>_hits.fits`
 3. `<prefix>_wpol.fits`
+4. `<prefix>_nobs00.fits`
 
 ## Input assumptions for pointing NPZ
 
@@ -68,7 +69,13 @@ Each NPZ must contain:
 3. `flag_ext1`, `flag_ext3`
 4. `sampling_rate_hz` (native sampling rate)
 
-If flags are not at native length, nearest-neighbor expansion is used.
+Optional field:
+
+1. `original_indices` (indices of undersampled quaternions in the original native-rate stream)
+
+If flags are not at native length, nearest-neighbor expansion is used. When
+`original_indices` is present, expansion follows those indices instead of a
+uniform index grid.
 
 ## Detector weighting
 

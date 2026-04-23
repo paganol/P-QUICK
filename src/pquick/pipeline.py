@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import cast
 
 import healpy as hp
 import numpy as np
@@ -17,10 +18,11 @@ from .io import (
     load_rimo_detectors,
     load_sky_alm,
     select_detectors,
+    truncate_alm,
 )
-from .mapmaking import accumulate_simple_iqu, finalize_simple_iqu
-from .pointing import reconstruct_native_pointing
-from .quaternion import normalize_quaternion, quat_mul, quaternion_to_thetaphipsi
+from .mapmaking import accumulate_tqu_matrix, init_map_matrix, solve_tqu_from_matrix
+from .pointing import build_pointing_interpolator
+from .quaternion import normalize_quaternion, quaternion_to_thetaphipsi
 from .weights import detector_map_weight
 
 
@@ -46,89 +48,133 @@ def _sum_reduce(comm, arr: np.ndarray) -> np.ndarray:
     return out
 
 
+def _vprint(enabled: bool, rank: int, msg: str) -> None:
+    if enabled and rank == 0:
+        print(msg, flush=True)
+
+
 def run_pipeline(config: PipelineConfig) -> Path | None:
+    """Execute the full beam-convolution map-making pipeline.
+
+    Loads sky ALMs and beam ALMs, iterates over operational days and detectors,
+    accumulates the polarised normal-equation matrix, solves for T/Q/U, and writes
+    FITS output maps.  MPI-aware: ODs are distributed across ranks and results
+    are reduced with ``Allreduce`` before writing.
+
+    Args:
+        config: Fully populated :class:`~pquick.config.PipelineConfig`.
+
+    Returns:
+        Path to the IQU FITS map on MPI rank 0; ``None`` on all other ranks.
+
+    Raises:
+        ValueError: If the configured lmax exceeds the sky ALM lmax.
+    """
     comm, rank, size = _get_mpi()
+    verbose = bool(config.verbose)
 
     sky_alm = load_sky_alm(config.inputs.sky_alm)
     lmax_alm = infer_lmax_from_alm(sky_alm)
     if config.convolution.lmax > lmax_alm:
         raise ValueError(f"Configured lmax={config.convolution.lmax} exceeds sky alm lmax={lmax_alm}")
+    sky_alm = truncate_alm(sky_alm, lmax_alm, config.convolution.lmax)
 
     det_meta = load_rimo_detectors(config.inputs.rimo_files)
     detectors = select_detectors(list(det_meta.keys()), config.detector_selection)
 
+    det_info: list[dict[str, object]] = []
+    for det in detectors:
+        beam_file = detector_to_beam_file(config.inputs.beams_dir, det)
+        beam_alm = load_beam_alm(
+            beam_file,
+            lmax=config.convolution.lmax,
+            kmax=config.convolution.mmax,
+        )
+        dmeta = det_meta.get(det, {})
+        dquat = normalize_quaternion(
+            np.asarray(dmeta.get("quat", np.array([0.0, 0.0, 0.0, 1.0])), dtype=np.float64)
+        )
+        det_info.append(
+            {
+                "name": det,
+                "beam_alm": beam_alm,
+                "quat": dquat,
+                "weight": detector_map_weight(det),
+            }
+        )
+
     all_pointing = discover_pointing_files(config.inputs.pointing.npz_glob)
     local_pointing = _local_slice(all_pointing, rank, size)
 
-    npix = hp.nside2npix(config.map.nside)
-    i_num_acc = np.zeros(npix, dtype=np.float64)
-    q_num_acc = np.zeros(npix, dtype=np.float64)
-    u_num_acc = np.zeros(npix, dtype=np.float64)
-    i_den_acc = np.zeros(npix, dtype=np.float64)
-    hits_acc = np.zeros(npix, dtype=np.int64)
-    wpol_acc = np.zeros(npix, dtype=np.float64)
+    _vprint(verbose, rank, f"Starting pipeline: {len(local_pointing)} ODs on rank {rank}/{size}")
 
-    for npz_path in local_pointing:
+    matrix_acc = init_map_matrix(config.map.nside)
+    hits_acc = np.zeros(matrix_acc.shape[0], dtype=np.int64)
+    n_chunks_cfg = int(max(1, config.convolution.chunks))
+
+    for od_idx, npz_path in enumerate(local_pointing, start=1):
+        _vprint(verbose, rank, f"[OD {od_idx}/{len(local_pointing)}] {npz_path.name}")
         point_us = load_pointing_npz(npz_path)
-        native = reconstruct_native_pointing(point_us, angular_eps=config.resampling.angular_eps)
-        for det in detectors:
-            dmeta = det_meta.get(det, {})
-            dquat = np.asarray(dmeta.get("quat", np.array([0.0, 0.0, 0.0, 1.0])), dtype=np.float64)
-            dquat = normalize_quaternion(dquat)
+        interp = build_pointing_interpolator(
+            point_us,
+            coordinate_system=config.resampling.coordinate_system,
+        )
 
-            q_det = quat_mul(native.quat_native, np.broadcast_to(dquat, native.quat_native.shape))
-            theta, phi, psi = quaternion_to_thetaphipsi(q_det)
-            ptg = np.column_stack([theta, phi, psi])
+        for det_idx, dinfo in enumerate(det_info, start=1):
+            det_quat = np.asarray(dinfo["quat"], dtype=np.float64)
+            beam_alm = np.asarray(dinfo["beam_alm"], dtype=np.complex128)
+            det_weight = cast(float, dinfo["weight"])
+            det_name = str(dinfo["name"])
 
-            beam_file = detector_to_beam_file(config.inputs.beams_dir, det)
-            beam_alm = load_beam_alm(beam_file)
-
-            tod = convolve_timeline(
-                sky_alm=sky_alm,
-                beam_alm=beam_alm,
-                ptg_thetaphipsi=ptg,
-                lmax=config.convolution.lmax,
-                kmax=config.convolution.kmax,
-                nthreads=config.convolution.nthreads,
-                separate=config.convolution.separate,
-                epsilon=config.convolution.epsilon,
+            _vprint(
+                verbose,
+                rank,
+                f"  [DET {det_idx}/{len(det_info)}] {det_name} | native samples={interp.n_native}",
             )
-            tod = np.where(native.flag_native == 0, tod, np.nan)
 
-            binned = accumulate_simple_iqu(
-                theta=theta,
-                phi=phi,
-                psi=psi,
-                tod=np.nan_to_num(tod, nan=0.0),
-                flags=native.flag_native,
-                nside=config.map.nside,
-                det_weight=detector_map_weight(det),
-                nest=config.map.nest,
-            )
-            i_num_acc += binned["i_num"]
-            q_num_acc += binned["q_num"]
-            u_num_acc += binned["u_num"]
-            i_den_acc += binned["i_den"]
-            hits_acc += binned["hits"]
-            wpol_acc += binned["wpol"]
+            chunk_samples = max(1, (interp.n_native + n_chunks_cfg - 1) // n_chunks_cfg)
+            n_chunks = (interp.n_native + chunk_samples - 1) // chunk_samples
 
-    i_num_all = _sum_reduce(comm, i_num_acc)
-    q_num_all = _sum_reduce(comm, q_num_acc)
-    u_num_all = _sum_reduce(comm, u_num_acc)
-    i_den_all = _sum_reduce(comm, i_den_acc)
+            for chunk_idx, chunk_start in enumerate(range(0, interp.n_native, chunk_samples), start=1):
+                chunk_end = min(chunk_start + chunk_samples, interp.n_native)
+                chunk_len = chunk_end - chunk_start
+                flag_chunk = interp.flag_native[chunk_start:chunk_end]
+                good = flag_chunk == 0
+                ngood = int(np.count_nonzero(good))
+                _vprint(
+                    verbose,
+                    rank,
+                    f"    [chunk {chunk_idx}/{n_chunks}] samples {chunk_start}:{chunk_end} | good={ngood}/{chunk_len}",
+                )
+                if not np.any(good):
+                    continue
+
+                det_quat_chunk = interp.get_detector_quaternions(det_quat, chunk_start, chunk_len)
+                det_quat_good = det_quat_chunk[good]
+
+                theta, phi, psi = quaternion_to_thetaphipsi(det_quat_good)
+                ptg = np.column_stack([theta, phi, psi])
+
+                tod = convolve_timeline(
+                    sky_alm=sky_alm,
+                    beam_alm=beam_alm,
+                    ptg_thetaphipsi=ptg,
+                    lmax=config.convolution.lmax,
+                    mmax=config.convolution.mmax,
+                    nthreads=config.convolution.nthreads,
+                    epsilon=config.convolution.epsilon,
+                    interpolator_cache=None,
+                )
+
+                pix = hp.ang2pix(config.map.nside, theta, phi, nest=config.map.nest)
+                accumulate_tqu_matrix(matrix_acc, pix, psi, np.asarray(tod, dtype=np.float64), det_weight)
+                np.add.at(hits_acc, pix, 1)
+
+    matrix_all = _sum_reduce(comm, matrix_acc)
     hits_all = _sum_reduce(comm, hits_acc)
-    wpol_all = _sum_reduce(comm, wpol_acc)
 
-    maps = finalize_simple_iqu(
-        {
-            "i_num": i_num_all,
-            "q_num": q_num_all,
-            "u_num": u_num_all,
-            "i_den": i_den_all,
-            "hits": hits_all,
-            "wpol": wpol_all,
-        }
-    )
+    t_map, q_map, u_map = solve_tqu_from_matrix(matrix_all)
+    nobs00 = matrix_all[:, 0, 0]
 
     if rank != 0:
         return None
@@ -140,21 +186,24 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     map_path = outdir / f"{prefix}_iqu.fits"
     hits_path = outdir / f"{prefix}_hits.fits"
     wpol_path = outdir / f"{prefix}_wpol.fits"
+    nobs_path = outdir / f"{prefix}_nobs00.fits"
 
     hp.write_map(
         str(map_path),
-        [maps["I"], maps["Q"], maps["U"]],
+        [t_map, q_map, u_map],
         overwrite=True,
         dtype=np.float64,
         nest=config.map.nest,
     )
     hp.write_map(str(hits_path), hits_all.astype(np.float64), overwrite=True, dtype=np.float64, nest=config.map.nest)
-    hp.write_map(str(wpol_path), wpol_all, overwrite=True, dtype=np.float64, nest=config.map.nest)
+    hp.write_map(str(wpol_path), nobs00, overwrite=True, dtype=np.float64, nest=config.map.nest)
+    hp.write_map(str(nobs_path), nobs00, overwrite=True, dtype=np.float64, nest=config.map.nest)
 
     return map_path
 
 
 def main() -> None:
+    """CLI entry point: parse ``--config``, run the pipeline, and print the output path."""
     parser = argparse.ArgumentParser(description="Run P-QUICK end-to-end pipeline")
     parser.add_argument("--config", required=True, help="Path to YAML configuration")
     args = parser.parse_args()

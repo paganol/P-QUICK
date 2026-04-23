@@ -18,6 +18,20 @@ def _required_npz_keys() -> tuple[str, ...]:
 
 
 def load_pointing_npz(path: str | Path) -> PointingData:
+    """Load a compressed NPZ pointing file and return a :class:`~pquick.pointing.PointingData`.
+
+    Validates that all required keys are present, normalises the stacked quaternion array,
+    and optionally reads ``original_indices`` for non-uniform undersampling.
+
+    Args:
+        path: Path to the ``.npz`` pointing file.
+
+    Returns:
+        A :class:`~pquick.pointing.PointingData` instance at the undersampled rate.
+
+    Raises:
+        ValueError: If required keys are missing or array lengths are inconsistent.
+    """
     p = Path(path)
     with np.load(p, allow_pickle=False) as data:
         missing = [k for k in _required_npz_keys() if k not in data]
@@ -32,6 +46,11 @@ def load_pointing_npz(path: str | Path) -> PointingData:
         flag_ext1 = np.asarray(data["flag_ext1"], dtype=np.int8)
         flag_ext3 = np.asarray(data["flag_ext3"], dtype=np.int8)
         sampling_rate_hz = float(np.asarray(data["sampling_rate_hz"]).reshape(-1)[0])
+        original_indices = (
+            np.asarray(data["original_indices"], dtype=np.int64)
+            if "original_indices" in data
+            else None
+        )
 
     if not (time_us.size == qx.size == qy.size == qz.size == qs.size):
         raise ValueError("undersampled quaternion arrays must have identical length")
@@ -42,10 +61,22 @@ def load_pointing_npz(path: str | Path) -> PointingData:
         flag_ext1=flag_ext1,
         flag_ext3=flag_ext3,
         sampling_rate_hz=sampling_rate_hz,
+        original_indices=original_indices,
     )
 
 
 def discover_pointing_files(npz_glob: str) -> list[Path]:
+    """Expand a glob pattern and return a sorted list of matching pointing file paths.
+
+    Args:
+        npz_glob: Shell glob expression (e.g. ``"inputs/pointings/processed_od_*.npz"``).
+
+    Returns:
+        Sorted list of matching :class:`pathlib.Path` objects.
+
+    Raises:
+        FileNotFoundError: If the glob matches no files.
+    """
     paths = [Path(p) for p in sorted(glob.glob(npz_glob))]
     if not paths:
         raise FileNotFoundError(f"No pointing files found for glob: {npz_glob}")
@@ -53,6 +84,20 @@ def discover_pointing_files(npz_glob: str) -> list[Path]:
 
 
 def load_sky_alm(path: str | Path) -> np.ndarray:
+    """Read sky spherical-harmonic coefficients from a FITS, ``.npy``, or ``.npz`` file.
+
+    Returns a ``(ncomp, nalm)`` complex128 array in healpy m-major order, where
+    ``ncomp`` is 1 or 3 (T-only or T/Q/U).
+
+    Args:
+        path: Path to the sky ALM file.
+
+    Returns:
+        Complex128 array of shape ``(ncomp, nalm)``.
+
+    Raises:
+        ValueError: If the file format is unsupported or the array shape is invalid.
+    """
     p = Path(path)
     suf = p.suffix.lower()
 
@@ -89,8 +134,48 @@ def _coerce_alm_shape(arr: np.ndarray) -> np.ndarray:
 
 
 def infer_lmax_from_alm(alm: np.ndarray) -> int:
+    """Infer the maximum multipole ``lmax`` from a healpy-ordered ALM array.
+
+    Args:
+        alm: Array of shape ``(ncomp, nalm)`` in healpy m-major order.
+
+    Returns:
+        The integer ``lmax`` corresponding to the second-axis length.
+    """
     nalm = int(alm.shape[1])
     return hp.Alm.getlmax(nalm)
+
+
+def truncate_alm(alm: np.ndarray, lmax_src: int, lmax_dst: int) -> np.ndarray:
+    """Truncate a healpy-ordered alm array from lmax_src down to lmax_dst."""
+    if lmax_dst >= lmax_src:
+        return alm
+    nalm_dst = (lmax_dst + 1) * (lmax_dst + 2) // 2
+    out = np.zeros((alm.shape[0], nalm_dst), dtype=np.complex128)
+    for m in range(lmax_dst + 1):
+        src_start = m * (2 * lmax_src + 1 - m) // 2
+        dst_start = m * (2 * lmax_dst + 1 - m) // 2
+        count = lmax_dst - m + 1
+        out[:, dst_start : dst_start + count] = alm[:, src_start : src_start + count]
+    return out
+
+
+def _nalm_mmajor(lmax: int, mmax: int) -> int:
+    return (mmax + 1) * (lmax + 1) - (mmax * (mmax + 1)) // 2
+
+
+def _beam_index_to_lm(index: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    idx0 = np.asarray(index, dtype=np.int64) - 1
+    ell = np.floor((np.sqrt(4.0 * idx0 + 1.0) - 1.0) / 2.0).astype(np.int64)
+    emm = idx0 - ell * (ell + 1)
+    return ell, emm
+
+
+def _pack_truncated_alm(coeff: np.ndarray, ell: np.ndarray, emm: np.ndarray, lmax: int, kmax: int) -> np.ndarray:
+    out = np.zeros(_nalm_mmajor(lmax, kmax), dtype=np.complex128)
+    start = emm * (lmax + 1) - (emm * (emm - 1)) // 2
+    out[start + (ell - emm)] = coeff
+    return out
 
 
 def _to_text(value: object) -> str:
@@ -114,6 +199,21 @@ def _rimo_detector_quat(phi_uv_deg: float, theta_uv_deg: float, psi_uv_deg: floa
 
 
 def load_rimo_detectors(rimo_paths: list[str]) -> dict[str, dict[str, np.ndarray | float]]:
+    """Read Planck RIMO FITS tables and return per-detector orientation metadata.
+
+    For each detector, the UV-frame angles ``(phi_uv, theta_uv, psi_uv)`` are read
+    (when present) and converted to a unit quaternion stored under the ``"quat"`` key.
+
+    Args:
+        rimo_paths: List of paths to RIMO FITS files.
+
+    Returns:
+        Dict mapping detector name to a metadata dict with keys
+        ``phi_uv``, ``theta_uv``, ``psi_uv``, and ``quat``.
+
+    Raises:
+        ValueError: If no detectors were loaded from any of the supplied files.
+    """
     out: dict[str, dict[str, np.ndarray | float]] = {}
     for rimo in rimo_paths:
         with fits.open(rimo) as hdul:
@@ -143,6 +243,21 @@ def load_rimo_detectors(rimo_paths: list[str]) -> dict[str, dict[str, np.ndarray
 
 
 def select_detectors(all_detectors: list[str], selection: DetectorSelection) -> list[str]:
+    """Filter a detector list according to a :class:`~pquick.config.DetectorSelection`.
+
+    Applies, in order: channel-prefix filter, explicit allowlist, include-regex patterns,
+    and exclude-regex patterns.
+
+    Args:
+        all_detectors: Full list of detector names to filter.
+        selection: Selection rules from the pipeline configuration.
+
+    Returns:
+        Sorted list of detectors that pass all active filters.
+
+    Raises:
+        ValueError: If the resulting selection is empty.
+    """
     selected = list(all_detectors)
 
     if selection.channel:
@@ -167,6 +282,21 @@ def select_detectors(all_detectors: list[str], selection: DetectorSelection) -> 
 
 
 def detector_to_beam_file(beams_dir: str | Path, detector: str) -> Path:
+    """Resolve the beam FITS file for a detector by name.
+
+    Tries canonical filename variants (with and without lowercase / ``_``→``-``
+    substitution) first, then falls back to a suffix-match scan of the directory.
+
+    Args:
+        beams_dir: Directory containing ``blm_*.fits`` beam files.
+        detector: Detector name (e.g. ``"100-1a"`` or ``"LFI27M"``).
+
+    Returns:
+        :class:`pathlib.Path` pointing to the resolved beam file.
+
+    Raises:
+        FileNotFoundError: If no matching file is found.
+    """
     bdir = Path(beams_dir)
 
     cand = [
@@ -190,7 +320,51 @@ def detector_to_beam_file(beams_dir: str | Path, detector: str) -> Path:
     raise FileNotFoundError(f"No beam file found for detector '{detector}' in {bdir}")
 
 
-def load_beam_alm(path: str | Path) -> np.ndarray:
-    # Beam files can be scalar or T/E/B-like; normalize to (ncomp, nalm)
-    alm = hp.read_alm(str(path), hdu=(1, 2, 3))
+def load_beam_alm(path: str | Path, lmax: int | None = None, kmax: int | None = None) -> np.ndarray:
+    """Read beam spherical-harmonic coefficients from a Planck-format FITS file.
+
+    The FITS table must contain ``index``, ``real``, and ``imag`` columns where
+    ``index`` encodes *(ℓ, m)* using the Planck sequential convention.  The
+    coefficients are repacked into a healpy m-major array truncated at *lmax*
+    and *kmax*.
+
+    Args:
+        path: Path to the beam FITS file (``blm_*.fits``).
+        lmax: Maximum ℓ to retain; defaults to the value found in the file.
+        kmax: Maximum azimuthal order *m* to retain; defaults to the file value.
+
+    Returns:
+        Complex128 array of shape ``(1, nalm_beam)`` in healpy m-major order.
+
+    Raises:
+        ValueError: If the requested *lmax* or *kmax* exceeds what the file provides.
+    """
+    p = Path(path)
+    with fits.open(p) as hdul:
+        if len(hdul) > 1 and getattr(hdul[1], "columns", None) is not None:
+            names = {name.lower() for name in hdul[1].columns.names}
+            if {"index", "real", "imag"}.issubset(names):
+                data = hdul[1].data
+                coeff = np.asarray(data["real"], dtype=np.float64) + 1j * np.asarray(data["imag"], dtype=np.float64)
+                ell, emm = _beam_index_to_lm(np.asarray(data["index"], dtype=np.int64))
+
+                src_lmax = int(ell.max())
+                src_kmax = int(emm.max())
+                use_lmax = src_lmax if lmax is None else int(lmax)
+                use_kmax = src_kmax if kmax is None else int(kmax)
+
+                if use_lmax > src_lmax:
+                    raise ValueError(f"Requested lmax={use_lmax} exceeds beam lmax={src_lmax} for {p}")
+                if use_kmax > src_kmax:
+                    raise ValueError(f"Requested kmax={use_kmax} exceeds beam kmax={src_kmax} for {p}")
+
+                mask = (ell <= use_lmax) & (emm <= use_kmax)
+                packed = _pack_truncated_alm(coeff[mask], ell[mask], emm[mask], use_lmax, use_kmax)
+                return packed[None, :]
+
+    # Fallback for more standard FITS ALM storage.
+    try:
+        alm = hp.read_alm(str(p), hdu=(1, 2, 3))
+    except Exception:
+        alm = hp.read_alm(str(p), hdu=1)
     return _coerce_alm_shape(np.asarray(alm, dtype=np.complex128))

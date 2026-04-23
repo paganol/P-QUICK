@@ -4,6 +4,17 @@ import numpy as np
 
 
 def normalize_quaternion(q: np.ndarray, eps: float = 1e-15) -> np.ndarray:
+    """Divide each quaternion by its norm, clamping the denominator to *eps*.
+
+    Supports both single quaternions ``(4,)`` and batches ``(..., 4)``.
+
+    Args:
+        q: Input quaternion(s) in ``(x, y, z, w)`` order.
+        eps: Minimum norm value to avoid division by zero.
+
+    Returns:
+        Unit quaternion(s) with the same shape as *q*.
+    """
     q = np.asarray(q, dtype=np.float64)
     nrm = np.linalg.norm(q, axis=-1, keepdims=True)
     nrm = np.maximum(nrm, eps)
@@ -11,6 +22,15 @@ def normalize_quaternion(q: np.ndarray, eps: float = 1e-15) -> np.ndarray:
 
 
 def quat_mul(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
+    """Compute the Hamilton product of two (batches of) quaternions.
+
+    Args:
+        q1: First quaternion(s), shape ``(..., 4)`` in ``(x, y, z, w)`` order.
+        q2: Second quaternion(s), same shape as *q1*.
+
+    Returns:
+        Product quaternion(s), shape ``(..., 4)``.
+    """
     x1, y1, z1, w1 = np.moveaxis(q1, -1, 0)
     x2, y2, z2, w2 = np.moveaxis(q2, -1, 0)
     return np.stack(
@@ -25,12 +45,29 @@ def quat_mul(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
 
 
 def quat_conj(q: np.ndarray) -> np.ndarray:
+    """Return the conjugate of a quaternion (or batch) by negating the vector part.
+
+    Args:
+        q: Quaternion(s), shape ``(..., 4)`` in ``(x, y, z, w)`` order.
+
+    Returns:
+        Conjugate quaternion(s) with the same shape.
+    """
     qq = np.asarray(q, dtype=np.float64).copy()
     qq[..., :3] *= -1.0
     return qq
 
 
 def quat_rotate_vec(q: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Rotate 3-vector(s) *v* by quaternion(s) *q* using the sandwich product ``q v q*``.
+
+    Args:
+        q: Rotation quaternion(s), shape ``(..., 4)``.
+        v: 3-vector(s) to rotate, shape ``(..., 3)``.
+
+    Returns:
+        Rotated 3-vector(s), shape ``(..., 3)``.
+    """
     v = np.asarray(v, dtype=np.float64)
     q = normalize_quaternion(np.asarray(q, dtype=np.float64))
     v_quat = np.concatenate([v, np.zeros(v.shape[:-1] + (1,), dtype=np.float64)], axis=-1)
@@ -38,6 +75,20 @@ def quat_rotate_vec(q: np.ndarray, v: np.ndarray) -> np.ndarray:
 
 
 def slerp(q0: np.ndarray, q1: np.ndarray, t: np.ndarray, eps: float = 1e-10) -> np.ndarray:
+    """Spherical-linear interpolation between pairs of unit quaternions.
+
+    Falls back to normalised linear interpolation when the two quaternions are
+    nearly identical (dot product close to 1).
+
+    Args:
+        q0: Start quaternion(s), shape ``(..., 4)``.
+        q1: End quaternion(s), shape ``(..., 4)``.
+        t: Interpolation parameter(s) in ``[0, 1]``, shape ``(...,)``.
+        eps: Threshold below which quaternions are treated as identical.
+
+    Returns:
+        Interpolated unit quaternion(s), shape ``(..., 4)``.
+    """
     q0 = normalize_quaternion(q0)
     q1 = normalize_quaternion(q1)
     dot = np.sum(q0 * q1, axis=-1, keepdims=True)
@@ -66,6 +117,23 @@ def upsample_quaternions(
     fine_t: np.ndarray,
     eps: float = 1e-10,
 ) -> np.ndarray:
+    """Resample a coarse quaternion time series onto a fine time grid via SLERP.
+
+    For each fine time stamp, the two nearest coarse neighbours are located by
+    binary search and the quaternion is interpolated with :func:`slerp`.
+
+    Args:
+        coarse_t: Coarse time grid, strictly increasing 1-D array.
+        coarse_q: Coarse quaternions, shape ``(N, 4)``.
+        fine_t: Target time grid, 1-D array.
+        eps: SLERP near-identity threshold.
+
+    Returns:
+        Unit quaternions at the fine grid points, shape ``(M, 4)``.
+
+    Raises:
+        ValueError: If input arrays have inconsistent shapes or non-monotone time grids.
+    """
     coarse_t = np.asarray(coarse_t, dtype=np.float64)
     coarse_q = normalize_quaternion(np.asarray(coarse_q, dtype=np.float64))
     fine_t = np.asarray(fine_t, dtype=np.float64)
@@ -89,6 +157,18 @@ def upsample_quaternions(
 
 
 def quaternion_to_thetaphipsi(q: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Convert unit quaternions to HEALPix sky angles ``(theta, phi, psi)``.
+
+    Rotates the boresight ``(0, 0, 1)`` to obtain co-latitude and longitude, then
+    rotates the polarisation reference vector ``(1, 0, 0)`` to derive the polarisation
+    angle *psi* relative to the local IAU frame.
+
+    Args:
+        q: Unit quaternions, shape ``(N, 4)`` in ``(x, y, z, w)`` order.
+
+    Returns:
+        Tuple ``(theta, phi, psi)`` of float64 arrays, each of shape ``(N,)``, in radians.
+    """
     q = normalize_quaternion(np.asarray(q, dtype=np.float64))
 
     z_axis = np.array([0.0, 0.0, 1.0], dtype=np.float64)
