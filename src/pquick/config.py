@@ -15,14 +15,10 @@ class DetectorSelection:
         channel: Optional channel prefix (e.g. ``"100"``); keeps only detectors whose
             name starts with this string.
         detectors: Explicit allowlist of detector names; if non-empty, only these pass.
-        include_regex: Additional regex patterns; a detector must match at least one.
-        exclude_regex: Regex patterns; a detector matching any of these is dropped.
     """
 
     channel: str | None = None
     detectors: list[str] = field(default_factory=list)
-    include_regex: list[str] = field(default_factory=list)
-    exclude_regex: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -46,12 +42,10 @@ class ResamplingConfig:
     """Parameters controlling native-rate pointing reconstruction.
 
     Attributes:
-        angular_eps: Legacy interpolation tolerance retained for API compatibility.
         coordinate_system: Output sky frame for reconstructed pointing. Supported
             values are ``"ecliptic"`` and ``"galactic"``.
     """
 
-    angular_eps: float = 1e-10
     coordinate_system: str = "galactic"
 
 
@@ -63,7 +57,6 @@ class ConvolutionConfig:
         lmax: Maximum multipole ℓ for both sky and beam ALMs.
         mmax: Maximum azimuthal order *m* of the beam (``kmax`` in ducc0 notation).
         nthreads: Number of OpenMP threads passed to ducc0 (0 = auto-detect).
-        separate: If ``True``, keep per-component TOD streams separate in ducc0.
         epsilon: Interpolation accuracy target for the ducc0 gridder.
         chunks: Number of equal-length interpolation calls per OD (1 = whole OD at once).
     """
@@ -71,7 +64,6 @@ class ConvolutionConfig:
     lmax: int
     mmax: int
     nthreads: int = 0
-    separate: bool = False
     epsilon: float = 1e-5
     chunks: int = 1
 
@@ -135,18 +127,14 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
         detector_selection=DetectorSelection(
             channel=channel,
             detectors=detectors,
-            include_regex=list(detsel.get("include_regex") or []),
-            exclude_regex=list(detsel.get("exclude_regex") or []),
         ),
         resampling=ResamplingConfig(
-            angular_eps=float(data.get("resampling", {}).get("angular_eps", 1e-10)),
             coordinate_system=str(data.get("resampling", {}).get("coordinate_system", "galactic")),
         ),
         convolution=ConvolutionConfig(
             lmax=int(data["convolution"]["lmax"]),
             mmax=int(data["convolution"].get("mmax", data["convolution"].get("kmax"))),
             nthreads=int(data.get("convolution", {}).get("nthreads", 0)),
-            separate=bool(data.get("convolution", {}).get("separate", False)),
             epsilon=float(data.get("convolution", {}).get("epsilon", 1e-5)),
             chunks=int(data.get("convolution", {}).get("chunks", 1)),
         ),

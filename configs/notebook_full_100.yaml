@@ -12,16 +12,12 @@ detector_selection:
   - 100-1b
   - 100-2a
   - 100-2b
-  include_regex: []
-  exclude_regex: []
 resampling:
-  angular_eps: 1.0e-10
   coordinate_system: galactic
 convolution:
   lmax: 16
   mmax: 6
   nthreads: 0
-  separate: false
   epsilon: 1.0e-05
   chunks: 1
 map:

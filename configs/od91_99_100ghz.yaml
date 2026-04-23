@@ -9,11 +9,8 @@ inputs:
 detector_selection:
   channel: 100ghz
   detectors: null
-  include_regex: []
-  exclude_regex: []
 
 resampling:
-  angular_eps: 1.0e-10
   coordinate_system: galactic
 
 convolution:

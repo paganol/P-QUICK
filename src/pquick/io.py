@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import healpy as hp
@@ -226,8 +225,7 @@ def load_rimo_detectors(rimo_path: str | Path) -> dict[str, dict[str, np.ndarray
 def select_detectors(all_detectors: list[str], selection: DetectorSelection) -> list[str]:
     """Filter a detector list according to a :class:`~pquick.config.DetectorSelection`.
 
-    Applies, in order: channel-prefix filter, explicit allowlist, include-regex patterns,
-    and exclude-regex patterns.
+    Applies, in order: channel/detset filter and explicit allowlist.
 
     Args:
         all_detectors: Full list of detector names to filter.
@@ -256,14 +254,6 @@ def select_detectors(all_detectors: list[str], selection: DetectorSelection) -> 
     if selection.detectors:
         allowed = {d.strip() for d in selection.detectors}
         selected = [d for d in selected if d in allowed]
-
-    for pat in selection.include_regex:
-        rx = re.compile(pat)
-        selected = [d for d in selected if rx.search(d)]
-
-    for pat in selection.exclude_regex:
-        rx = re.compile(pat)
-        selected = [d for d in selected if not rx.search(d)]
 
     if not selected:
         raise ValueError("Detector selection is empty")

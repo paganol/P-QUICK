@@ -26,7 +26,7 @@ Important fields:
 2. `inputs.rimo_file`: path to the RIMO FITS file.
 3. `inputs.pointing.input_root`: common path prefix for pointing NPZ files (e.g. `inputs/pointings/processed_od_`); files are resolved as `{input_root}{od:04d}.npz`.
 4. `inputs.pointing.mission_length`: OD selector (`full`, `survey 1` ... `survey 5`, or explicit `91-99`). Defaults to `full`.
-4. `detector_selection`: choose explicit detector lists and/or regex.
+4. `detector_selection`: choose either a channel/detset alias or an explicit detector list.
 5. `convolution.lmax` / `convolution.mmax`: harmonic limits.
 6. `map.nside`: output HEALPix map resolution.
 7. `resampling.coordinate_system`: pointing frame (`ecliptic` or `galactic`).

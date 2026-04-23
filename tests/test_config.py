@@ -19,8 +19,6 @@ detector_selection:
   channel: 100ghz
   detectors:
     - 100-1a
-  include_regex: []
-  exclude_regex: []
 
 resampling:
   angular_eps: 1.0e-10

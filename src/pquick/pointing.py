@@ -234,7 +234,6 @@ def _estimate_coarse_rate_hz(
 
 def reconstruct_native_pointing(
     pointing: PointingData,
-    angular_eps: float = 1e-10,
     coordinate_system: str = "galactic",
 ) -> NativePointing:
     """Upsample boresight quaternions to the native rate via ``ducc0.PointingProvider``.
@@ -243,14 +242,12 @@ def reconstruct_native_pointing(
 
     Args:
         pointing: Undersampled pointing data from :func:`~pquick.io.load_pointing_npz`.
-        angular_eps: Unused; kept for API compatibility.
         coordinate_system: Output sky frame for the returned quaternions. Supported
             values are ``"ecliptic"`` and ``"galactic"``.
 
     Returns:
         A :class:`NativePointing` instance at the full detector sampling rate.
     """
-    del angular_eps
     try:
         from ducc0.pointingprovider import PointingProvider
     except Exception as exc:  # pragma: no cover
