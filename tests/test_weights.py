@@ -1,4 +1,4 @@
-from pquick.weights import detector_map_weight
+from pquick.utilities import detector_map_weight
 
 
 def test_qp_planck_weight_lookup_hfi_psb_arm():

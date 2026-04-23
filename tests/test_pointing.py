@@ -13,8 +13,7 @@ def test_reconstruct_native_pointing_basic():
     p = PointingData(
         time_us=time_us,
         quat_us=quat_us,
-        flag_ext1=np.array([0, 1, 0], dtype=np.int8),
-        flag_ext3=np.array([0, 0, 0], dtype=np.int8),
+        flag=np.array([0, 1, 0], dtype=np.int8),
         sampling_rate_hz=2.0,
     )
     n = reconstruct_native_pointing(p)
@@ -24,7 +23,7 @@ def test_reconstruct_native_pointing_basic():
     assert n.flag_native.shape == (3,)
 
 
-def test_reconstruct_native_pointing_uses_original_indices_for_flags_and_length():
+def test_reconstruct_native_pointing_uses_original_indices_for_flag_and_length():
     time_us = np.array([10.0, 14.0, 18.0], dtype=np.float64)
     quat_us = np.array(
         [
@@ -38,8 +37,7 @@ def test_reconstruct_native_pointing_uses_original_indices_for_flags_and_length(
     p = PointingData(
         time_us=time_us,
         quat_us=quat_us,
-        flag_ext1=np.array([0, 0, 1, 0, 0], dtype=np.int8),
-        flag_ext3=np.array([0, 0, 0, 0, 1], dtype=np.int8),
+        flag=np.array([0, 0, 1, 0, 1], dtype=np.int8),
         sampling_rate_hz=2.0,
         original_indices=np.array([0, 2, 4], dtype=np.int64),
     )
@@ -62,8 +60,7 @@ def test_reconstruct_native_pointing_can_convert_to_galactic():
     p = PointingData(
         time_us=time_us,
         quat_us=quat_us,
-        flag_ext1=np.array([0, 0, 0], dtype=np.int8),
-        flag_ext3=np.array([0, 0, 0], dtype=np.int8),
+        flag=np.array([0, 0, 0], dtype=np.int8),
         sampling_rate_hz=2.0,
     )
 

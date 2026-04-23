@@ -1,22 +1,14 @@
 inputs:
   sky_alm: inputs/sky/alms_cmb0000.fits
   beams_dir: inputs/beams
-  rimo_files:
-    - inputs/RIMOs/RIMO_HFI_npipe5v16_symmetrized.fits
+  rimo_file: inputs/RIMOs/RIMO_HFI_npipe5v16_symmetrized.fits
   pointing:
-    npz_glob: inputs/pointings/processed_od_009[1-9].npz
+    input_root: inputs/pointings/processed_od_
+    mission_length: 91-99
 
 detector_selection:
-  channel: null
-  detectors:
-    - 100-1a
-    - 100-1b
-    - 100-2a
-    - 100-2b
-    - 100-3a
-    - 100-3b
-    - 100-4a
-    - 100-4b
+  channel: 100ghz
+  detectors: null
   include_regex: []
   exclude_regex: []
 

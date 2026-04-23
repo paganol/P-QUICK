@@ -14,8 +14,7 @@ class PointingData:
     Attributes:
         time_us: Timestamps in nanoseconds at the coarse sampling rate.
         quat_us: Unit quaternions ``(x, y, z, w)`` at the coarse rate, shape ``(N, 4)``.
-        flag_ext1: Quality flags at the **native** (full-rate) sampling rate (ext1 criterion).
-        flag_ext3: Quality flags at the **native** (full-rate) sampling rate (ext3 criterion).
+        flag: Quality flags at the **native** (full-rate) sampling rate.
         sampling_rate_hz: Native (full-rate) detector sampling frequency in Hz.
         original_indices: Optional mapping from coarse samples to native-rate indices,
             enabling non-uniform undersampling.
@@ -23,8 +22,7 @@ class PointingData:
 
     time_us: np.ndarray
     quat_us: np.ndarray
-    flag_ext1: np.ndarray
-    flag_ext3: np.ndarray
+    flag: np.ndarray
     sampling_rate_hz: float
     original_indices: np.ndarray | None = None
 
@@ -241,8 +239,7 @@ def reconstruct_native_pointing(
 ) -> NativePointing:
     """Upsample boresight quaternions to the native rate via ``ducc0.PointingProvider``.
 
-    Combines the ``ext1`` and ``ext3`` flag arrays with bitwise OR to produce merged
-    native-rate flags.
+    Uses native-rate quality flags from :class:`PointingData` directly.
 
     Args:
         pointing: Undersampled pointing data from :func:`~pquick.io.load_pointing_npz`.
@@ -275,11 +272,8 @@ def reconstruct_native_pointing(
     )
     quat_native = normalize_quaternion(quat_mul(_frame_rotation_quaternion(coordinate_system), quat_native))
 
-    # Keep bad samples marked; ext1 and ext3 flags are already at native rate.
-    flag_native = np.bitwise_or(
-        pointing.flag_ext1.astype(np.int8),
-        pointing.flag_ext3.astype(np.int8),
-    )
+    # Keep bad samples marked; flags are already at native rate.
+    flag_native = np.asarray(pointing.flag, dtype=np.int8)
 
     return NativePointing(time_native=time_native, quat_native=quat_native, flag_native=flag_native)
 
@@ -310,11 +304,8 @@ def build_pointing_interpolator(
     time_native = reconstruct_native_time(pointing.time_us, pointing.sampling_rate_hz, pointing.original_indices)
     coarse_rate_hz = _estimate_coarse_rate_hz(pointing.time_us, pointing.sampling_rate_hz, pointing.original_indices)
 
-    # Flags are already at native rate — combine directly.
-    flag_native = np.bitwise_or(
-        pointing.flag_ext1.astype(np.int8),
-        pointing.flag_ext3.astype(np.int8),
-    )
+    # Flags are already at native rate.
+    flag_native = np.asarray(pointing.flag, dtype=np.int8)
 
     pp = PointingProvider(0.0, coarse_rate_hz, pointing.quat_us)
     return PointingInterpolator(

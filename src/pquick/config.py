@@ -27,9 +27,18 @@ class DetectorSelection:
 
 @dataclass
 class PointingConfig:
-    """Configuration for locating input pointing NPZ files via a glob pattern."""
+    """Configuration for locating and selecting input pointing NPZ files.
 
-    npz_glob: str
+    Attributes:
+        input_root: Common path prefix for pointing NPZ files, e.g.
+            ``"inputs/pointings/processed_od_"``. Files are resolved as
+            ``{input_root}{od:04d}.npz`` for each OD in the mission-length range.
+        mission_length: OD selector (e.g. ``"full"``, ``"survey 2"``,
+            or explicit ``"91-99"``). Defaults to ``"full"`` when omitted.
+    """
+
+    input_root: str
+    mission_length: str | None = None
 
 
 @dataclass
@@ -78,11 +87,11 @@ class MapConfig:
 
 @dataclass
 class InputsConfig:
-    """Paths to all pipeline inputs: sky ALMs, beam directory, RIMOs, and pointings."""
+    """Paths to all pipeline inputs: sky ALMs, beam directory, RIMO, and pointings."""
 
     sky_alm: str
     beams_dir: str
-    rimo_files: list[str]
+    rimo_file: str
     pointing: PointingConfig
 
 
@@ -107,18 +116,27 @@ class PipelineConfig:
 
 
 def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
+    detsel = data.get("detector_selection") or {}
+    channel = detsel.get("channel")
+    detectors = list(detsel.get("detectors") or [])
+    if channel and detectors:
+        raise ValueError("Specify only one of detector_selection.channel or detector_selection.detectors")
+
     return PipelineConfig(
         inputs=InputsConfig(
             sky_alm=data["inputs"]["sky_alm"],
             beams_dir=data["inputs"]["beams_dir"],
-            rimo_files=list(data["inputs"]["rimo_files"]),
-            pointing=PointingConfig(npz_glob=data["inputs"]["pointing"]["npz_glob"]),
+            rimo_file=str(data["inputs"]["rimo_file"]),
+            pointing=PointingConfig(
+                input_root=data["inputs"]["pointing"]["input_root"],
+                mission_length=data["inputs"]["pointing"].get("mission_length"),
+            ),
         ),
         detector_selection=DetectorSelection(
-            channel=data.get("detector_selection", {}).get("channel"),
-            detectors=list(data.get("detector_selection", {}).get("detectors", [])),
-            include_regex=list(data.get("detector_selection", {}).get("include_regex", [])),
-            exclude_regex=list(data.get("detector_selection", {}).get("exclude_regex", [])),
+            channel=channel,
+            detectors=detectors,
+            include_regex=list(detsel.get("include_regex") or []),
+            exclude_regex=list(detsel.get("exclude_regex") or []),
         ),
         resampling=ResamplingConfig(
             angular_eps=float(data.get("resampling", {}).get("angular_eps", 1e-10)),

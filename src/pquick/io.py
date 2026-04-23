@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import glob
 import re
 from pathlib import Path
 
@@ -11,17 +10,20 @@ from astropy.io import fits
 from .config import DetectorSelection
 from .pointing import PointingData
 from .quaternion import normalize_quaternion
+from .utilities import DETSETS
 
 
 def _required_npz_keys() -> tuple[str, ...]:
-    return ("time", "qx", "qy", "qz", "qs", "flag_ext1", "flag_ext3", "sampling_rate_hz")
+    return ("time", "qx", "qy", "qz", "qs", "flag", "sampling_rate_hz")
 
 
 def load_pointing_npz(path: str | Path) -> PointingData:
     """Load a compressed NPZ pointing file and return a :class:`~pquick.pointing.PointingData`.
 
-    Validates that all required keys are present, normalises the stacked quaternion array,
-    and optionally reads ``original_indices`` for non-uniform undersampling.
+    Validates required keys, normalises the stacked quaternion array, and optionally
+    reads ``original_indices`` for non-uniform undersampling.
+
+    Expects a single native-rate ``flag`` field.
 
     Args:
         path: Path to the ``.npz`` pointing file.
@@ -43,8 +45,7 @@ def load_pointing_npz(path: str | Path) -> PointingData:
         qy = np.asarray(data["qy"], dtype=np.float64)
         qz = np.asarray(data["qz"], dtype=np.float64)
         qs = np.asarray(data["qs"], dtype=np.float64)
-        flag_ext1 = np.asarray(data["flag_ext1"], dtype=np.int8)
-        flag_ext3 = np.asarray(data["flag_ext3"], dtype=np.int8)
+        flag = np.asarray(data["flag"], dtype=np.int8)
         sampling_rate_hz = float(np.asarray(data["sampling_rate_hz"]).reshape(-1)[0])
         original_indices = (
             np.asarray(data["original_indices"], dtype=np.int64)
@@ -58,29 +59,10 @@ def load_pointing_npz(path: str | Path) -> PointingData:
     return PointingData(
         time_us=time_us,
         quat_us=quat_us,
-        flag_ext1=flag_ext1,
-        flag_ext3=flag_ext3,
+        flag=flag,
         sampling_rate_hz=sampling_rate_hz,
         original_indices=original_indices,
     )
-
-
-def discover_pointing_files(npz_glob: str) -> list[Path]:
-    """Expand a glob pattern and return a sorted list of matching pointing file paths.
-
-    Args:
-        npz_glob: Shell glob expression (e.g. ``"inputs/pointings/processed_od_*.npz"``).
-
-    Returns:
-        Sorted list of matching :class:`pathlib.Path` objects.
-
-    Raises:
-        FileNotFoundError: If the glob matches no files.
-    """
-    paths = [Path(p) for p in sorted(glob.glob(npz_glob))]
-    if not paths:
-        raise FileNotFoundError(f"No pointing files found for glob: {npz_glob}")
-    return paths
 
 
 def load_sky_alm(path: str | Path) -> np.ndarray:
@@ -198,47 +180,46 @@ def _rimo_detector_quat(phi_uv_deg: float, theta_uv_deg: float, psi_uv_deg: floa
     return normalize_quaternion(quat)
 
 
-def load_rimo_detectors(rimo_paths: list[str]) -> dict[str, dict[str, np.ndarray | float]]:
-    """Read Planck RIMO FITS tables and return per-detector orientation metadata.
+def load_rimo_detectors(rimo_path: str | Path) -> dict[str, dict[str, np.ndarray | float]]:
+    """Read a Planck RIMO FITS table and return per-detector orientation metadata.
 
     For each detector, the UV-frame angles ``(phi_uv, theta_uv, psi_uv)`` are read
     (when present) and converted to a unit quaternion stored under the ``"quat"`` key.
 
     Args:
-        rimo_paths: List of paths to RIMO FITS files.
+        rimo_path: Path to the RIMO FITS file.
 
     Returns:
         Dict mapping detector name to a metadata dict with keys
         ``phi_uv``, ``theta_uv``, ``psi_uv``, and ``quat``.
 
     Raises:
-        ValueError: If no detectors were loaded from any of the supplied files.
+        ValueError: If no detectors were loaded from the file.
     """
     out: dict[str, dict[str, np.ndarray | float]] = {}
-    for rimo in rimo_paths:
-        with fits.open(rimo) as hdul:
-            tab = hdul[1].data
-            names = [n.upper() for n in tab.columns.names]
+    with fits.open(rimo_path) as hdul:
+        tab = hdul[1].data
+        names = [n.upper() for n in tab.columns.names]
 
-            det_col = "DETECTOR" if "DETECTOR" in names else names[0]
-            has_phi = "PHI_UV" in names
-            has_theta = "THETA_UV" in names
-            has_psi = "PSI_UV" in names
+        det_col = "DETECTOR" if "DETECTOR" in names else names[0]
+        has_phi = "PHI_UV" in names
+        has_theta = "THETA_UV" in names
+        has_psi = "PSI_UV" in names
 
-            for row in tab:
-                det = _to_text(row[det_col])
-                rec: dict[str, np.ndarray | float] = {}
-                if has_phi and has_theta and has_psi:
-                    phi_uv = float(row["PHI_UV"])
-                    theta_uv = float(row["THETA_UV"])
-                    psi_uv = float(row["PSI_UV"])
-                    rec["phi_uv"] = phi_uv
-                    rec["theta_uv"] = theta_uv
-                    rec["psi_uv"] = psi_uv
-                    rec["quat"] = _rimo_detector_quat(phi_uv, theta_uv, psi_uv)
-                out[det] = rec
+        for row in tab:
+            det = _to_text(row[det_col])
+            rec: dict[str, np.ndarray | float] = {}
+            if has_phi and has_theta and has_psi:
+                phi_uv = float(row["PHI_UV"])
+                theta_uv = float(row["THETA_UV"])
+                psi_uv = float(row["PSI_UV"])
+                rec["phi_uv"] = phi_uv
+                rec["theta_uv"] = theta_uv
+                rec["psi_uv"] = psi_uv
+                rec["quat"] = _rimo_detector_quat(phi_uv, theta_uv, psi_uv)
+            out[det] = rec
     if not out:
-        raise ValueError("No detectors loaded from RIMO files")
+        raise ValueError(f"No detectors loaded from RIMO file: {rimo_path}")
     return out
 
 
@@ -256,13 +237,21 @@ def select_detectors(all_detectors: list[str], selection: DetectorSelection) -> 
         Sorted list of detectors that pass all active filters.
 
     Raises:
-        ValueError: If the resulting selection is empty.
+        ValueError: If both ``channel`` and ``detectors`` are provided, or if
+            the resulting selection is empty.
     """
     selected = list(all_detectors)
 
+    if selection.channel and selection.detectors:
+        raise ValueError("Specify only one of detector_selection.channel or detector_selection.detectors")
+
     if selection.channel:
         tag = selection.channel.strip().lower()
-        selected = [d for d in selected if d.lower().startswith(tag)]
+        if tag in DETSETS:
+            allowed = set(DETSETS[tag])
+            selected = [d for d in selected if d in allowed]
+        else:
+            selected = [d for d in selected if d.lower().startswith(tag)]
 
     if selection.detectors:
         allowed = {d.strip() for d in selection.detectors}

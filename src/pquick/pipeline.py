@@ -11,7 +11,6 @@ from .config import PipelineConfig, load_config
 from .convolution import convolve_timeline
 from .io import (
     detector_to_beam_file,
-    discover_pointing_files,
     infer_lmax_from_alm,
     load_beam_alm,
     load_pointing_npz,
@@ -23,7 +22,7 @@ from .io import (
 from .mapmaking import accumulate_tqu_matrix, init_map_matrix, solve_tqu_from_matrix
 from .pointing import build_pointing_interpolator
 from .quaternion import normalize_quaternion, quaternion_to_thetaphipsi
-from .weights import detector_map_weight
+from .utilities import build_pointing_file_paths, detector_map_weight, parse_mission_length
 
 
 def _get_mpi():
@@ -79,7 +78,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         raise ValueError(f"Configured lmax={config.convolution.lmax} exceeds sky alm lmax={lmax_alm}")
     sky_alm = truncate_alm(sky_alm, lmax_alm, config.convolution.lmax)
 
-    det_meta = load_rimo_detectors(config.inputs.rimo_files)
+    det_meta = load_rimo_detectors(config.inputs.rimo_file)
     detectors = select_detectors(list(det_meta.keys()), config.detector_selection)
 
     det_info: list[dict[str, object]] = []
@@ -103,7 +102,9 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             }
         )
 
-    all_pointing = discover_pointing_files(config.inputs.pointing.npz_glob)
+    mission = config.inputs.pointing.mission_length or "full"
+    od_start, od_end = parse_mission_length(mission)
+    all_pointing = build_pointing_file_paths(config.inputs.pointing.input_root, od_start, od_end)
     local_pointing = _local_slice(all_pointing, rank, size)
 
     _vprint(verbose, rank, f"Starting pipeline: {len(local_pointing)} ODs on rank {rank}/{size}")
