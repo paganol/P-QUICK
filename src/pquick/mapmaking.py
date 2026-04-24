@@ -61,15 +61,20 @@ def accumulate_tqu_matrix(
 def solve_tqu_from_matrix(
     matrix: np.ndarray,
     cond_threshold: float = 1e10,
+    batch_size: int = 1_000_000,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Solve the per-pixel 3×3 polarised map-making equation to recover T, Q, U maps.
+    """Solve the per-pixel 3x3 polarised map-making equation to recover T, Q, U maps.
 
     Pixels with no hits or a poorly conditioned normal matrix are set to ``hp.UNSEEN``.
+    Pixels are processed in batches of ``batch_size`` to keep the memory footprint small
+    (avoids allocating a full-sky copy of the matrix during the solve step).
 
     Args:
         matrix: Accumulated normal-equation array of shape ``(npix, 3, 3)`` from
             :func:`accumulate_tqu_matrix`.
         cond_threshold: Pixels whose matrix condition number exceeds this value are masked.
+        batch_size: Number of hit pixels to process per batch. Reduce this to lower peak
+            memory at the cost of slightly more Python overhead.
 
     Returns:
         Tuple ``(t_map, q_map, u_map)`` of float64 HEALPix maps.
@@ -83,28 +88,31 @@ def solve_tqu_from_matrix(
     if hit_idx.size == 0:
         return t_map, q_map, u_map
 
-    # Work on a contiguous copy of only the hit pixels.
-    A = matrix[hit_idx].copy()  # (n_hit, 3, 3)
+    for start in range(0, hit_idx.size, batch_size):
+        batch_idx = hit_idx[start : start + batch_size]
 
-    # Extract the RHS from the lower-left triangle before symmetrising.
-    rhs = np.stack([A[:, 1, 0], A[:, 2, 0], A[:, 2, 1]], axis=1)  # (n_hit, 3)
+        # Fancy-indexed copy of this batch only (small, ~72 MB for 1 M pixels).
+        A = matrix[batch_idx].copy()  # (batch, 3, 3)
 
-    # Symmetrize the normal matrices in-place.
-    A[:, 1, 0] = A[:, 0, 1]
-    A[:, 2, 0] = A[:, 0, 2]
-    A[:, 2, 1] = A[:, 1, 2]
+        # Extract the RHS from the lower-left triangle before symmetrising.
+        rhs = np.stack([A[:, 1, 0], A[:, 2, 0], A[:, 2, 1]], axis=1)  # (batch, 3)
 
-    # Vectorised condition check; reject ill-conditioned pixels.
-    cond = np.linalg.cond(A)  # (n_hit,)
-    good = cond < cond_threshold
-    if not np.any(good):
-        return t_map, q_map, u_map
+        # Symmetrize the normal matrices in-place.
+        A[:, 1, 0] = A[:, 0, 1]
+        A[:, 2, 0] = A[:, 0, 2]
+        A[:, 2, 1] = A[:, 1, 2]
 
-    sol = np.linalg.solve(A[good], rhs[good, :, np.newaxis]).squeeze(-1)  # (n_good, 3)
-    idx_good = hit_idx[good]
-    t_map[idx_good] = sol[:, 0]
-    q_map[idx_good] = sol[:, 1]
-    u_map[idx_good] = sol[:, 2]
+        # Vectorised condition check; reject ill-conditioned pixels.
+        cond = np.linalg.cond(A)
+        good = cond < cond_threshold
+        if not np.any(good):
+            continue
+
+        sol = np.linalg.solve(A[good], rhs[good, :, np.newaxis]).squeeze(-1)  # (n_good, 3)
+        idx_good = batch_idx[good]
+        t_map[idx_good] = sol[:, 0]
+        q_map[idx_good] = sol[:, 1]
+        u_map[idx_good] = sol[:, 2]
 
     return t_map, q_map, u_map
 

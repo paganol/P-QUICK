@@ -247,3 +247,40 @@ def print_mpi_distribution(
             else:
                 od_info = "no ODs assigned"
             print(f"  rank {r:>{width}} : {h} | {od_info}", flush=True)
+
+
+def estimate_memory_per_rank_mb(nside: int) -> float:
+    """Estimate the peak memory per MPI rank in MB for a given nside.
+
+    The dominant terms are the full-sky normal-equation matrix (npix, 3, 3) float64,
+    the hit-pixel index array, and the three output maps.  The batched solve in
+    :func:`~pquick.mapmaking.solve_tqu_from_matrix` keeps the per-batch copy small so
+    it is not included in the estimate.
+
+    Args:
+        nside: HEALPix resolution parameter.
+
+    Returns:
+        Estimated peak memory in MB.
+    """
+    npix = 12 * nside * nside
+    matrix_mb = npix * 9 * 8 / 1024**2   # (npix, 3, 3) float64
+    hits_mb   = npix * 8 / 1024**2        # (npix,) int64 (hit index worst case)
+    maps_mb   = npix * 3 * 8 / 1024**2   # t, q, u output maps
+    return matrix_mb + hits_mb + maps_mb
+
+
+def suggest_tasks_per_node(nside: int, node_memory_mb: float, cores_per_node: int) -> int:
+    """Suggest the maximum number of MPI tasks per node for a given nside.
+
+    Args:
+        nside: HEALPix resolution parameter.
+        node_memory_mb: Total physical memory on one compute node in MB.
+        cores_per_node: Number of cores (and therefore maximum tasks) per node.
+
+    Returns:
+        Recommended number of MPI tasks per node (capped at ``cores_per_node``).
+    """
+    mem_per_rank = estimate_memory_per_rank_mb(nside)
+    max_tasks = int(node_memory_mb / mem_per_rank)
+    return min(max_tasks, cores_per_node)

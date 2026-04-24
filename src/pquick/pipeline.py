@@ -22,7 +22,7 @@ from .io import (
 from .mapmaking import accumulate_tqu_matrix, init_map_matrix, solve_tqu_from_matrix
 from .pointing import build_pointing_interpolator
 from .quaternion import normalize_quaternion, quaternion_to_thetaphipsi
-from .utilities import build_pointing_file_paths, detector_map_weight, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution
+from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution
 
 
 def _get_mpi():
@@ -111,6 +111,14 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     if verbose:
         local_ods = [extract_od_from_pointing_filename(p) for p in local_pointing]
         print_mpi_distribution(comm, rank, size, local_ods)
+        est_mb = estimate_memory_per_rank_mb(config.map.nside)
+        _vprint(
+            verbose,
+            rank,
+            f"[Memory] Estimated peak per rank: {est_mb / 1024:.2f} GB"
+            f" (nside={config.map.nside}, npix={12 * config.map.nside**2:,})"
+            f" | for {size} ranks: {size * est_mb / 1024:.1f} GB total",
+        )
 
     _vprint(verbose, rank, f"Starting pipeline: {len(local_pointing)} ODs on rank {rank}/{size}")
 
