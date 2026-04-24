@@ -159,9 +159,13 @@ def upsample_quaternions(
 def quaternion_to_thetaphipsi(q: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Convert unit quaternions to HEALPix sky angles ``(theta, phi, psi)``.
 
-    Rotates the boresight ``(0, 0, 1)`` to obtain co-latitude and longitude, then
-    rotates the polarisation reference vector ``(1, 0, 0)`` to derive the polarisation
-    angle *psi* relative to the local IAU frame.
+    Uses a direct closed-form expression in the quaternion components instead of
+    repeated ``quat_mul`` calls, avoiding all intermediate quaternion temporaries.
+
+    For unit quaternion ``q = (qx, qy, qz, qw)`` the rotation matrix column vectors are:
+
+    * boresight ``R @ z``: ``(2(qx*qz + qy*qw),  2(qy*qz - qx*qw),  1 - 2(qx² + qy²))``
+    * x-axis    ``R @ x``: ``(1 - 2(qy² + qz²),  2(qx*qy + qz*qw),  2(qx*qz - qy*qw))``
 
     Args:
         q: Unit quaternions, shape ``(N, 4)`` in ``(x, y, z, w)`` order.
@@ -170,27 +174,35 @@ def quaternion_to_thetaphipsi(q: np.ndarray) -> tuple[np.ndarray, np.ndarray, np
         Tuple ``(theta, phi, psi)`` of float64 arrays, each of shape ``(N,)``, in radians.
     """
     q = normalize_quaternion(np.asarray(q, dtype=np.float64))
+    qx, qy, qz, qw = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
 
-    z_axis = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-    x_axis = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    # Boresight direction: R(q) @ [0, 0, 1]
+    bx = 2.0 * (qx * qz + qy * qw)
+    by = 2.0 * (qy * qz - qx * qw)
+    bz = 1.0 - 2.0 * (qx * qx + qy * qy)
 
-    bore = quat_rotate_vec(q, np.broadcast_to(z_axis, q.shape[:-1] + (3,)))
-    x_rot = quat_rotate_vec(q, np.broadcast_to(x_axis, q.shape[:-1] + (3,)))
+    theta = np.arccos(np.clip(bz, -1.0, 1.0))
+    phi = np.mod(np.arctan2(by, bx), 2.0 * np.pi)
 
-    theta = np.arccos(np.clip(bore[..., 2], -1.0, 1.0))
-    phi = np.mod(np.arctan2(bore[..., 1], bore[..., 0]), 2.0 * np.pi)
+    # X-axis direction: R(q) @ [1, 0, 0]
+    xx = 1.0 - 2.0 * (qy * qy + qz * qz)
+    xy = 2.0 * (qx * qy + qz * qw)
+    xz = 2.0 * (qx * qz - qy * qw)
 
-    e_theta = np.stack(
-        [
-            np.cos(theta) * np.cos(phi),
-            np.cos(theta) * np.sin(phi),
-            -np.sin(theta),
-        ],
-        axis=-1,
-    )
-    e_phi = np.stack([-np.sin(phi), np.cos(phi), np.zeros_like(phi)], axis=-1)
+    # Local frame at (theta, phi); use boresight components to avoid extra trig calls.
+    # sin(theta) = sqrt(bx² + by²); guard against the pole (sin_th → 0).
+    sin_th = np.sqrt(np.maximum(bx * bx + by * by, 0.0))
+    safe = sin_th > 0.0
+    inv_sin_th = np.where(safe, 1.0 / np.where(safe, sin_th, 1.0), 0.0)
 
-    x_theta = np.sum(x_rot * e_theta, axis=-1)
-    x_phi = np.sum(x_rot * e_phi, axis=-1)
+    # cos(phi) = bx / sin_th,  sin(phi) = by / sin_th
+    cos_ph = bx * inv_sin_th
+    sin_ph = by * inv_sin_th
+
+    # e_theta = [bz*cos_ph, bz*sin_ph, -sin_th]
+    # e_phi   = [-sin_ph, cos_ph, 0]
+    x_theta = xx * bz * cos_ph + xy * bz * sin_ph - xz * sin_th
+    x_phi = -xx * sin_ph + xy * cos_ph
+
     psi = np.arctan2(x_phi, x_theta)
     return theta, phi, psi
