@@ -100,7 +100,7 @@ def solve_tqu_from_matrix(
     if not np.any(good):
         return t_map, q_map, u_map
 
-    sol = np.linalg.solve(A[good], rhs[good])  # (n_good, 3)
+    sol = np.linalg.solve(A[good], rhs[good, :, np.newaxis]).squeeze(-1)  # (n_good, 3)
     idx_good = hit_idx[good]
     t_map[idx_good] = sol[:, 0]
     q_map[idx_good] = sol[:, 1]

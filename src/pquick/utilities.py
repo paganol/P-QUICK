@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import socket
 from pathlib import Path
 
 # Detector sets: base detector groups by frequency, then derived aliases below.
@@ -204,3 +205,45 @@ def build_pointing_file_paths(input_root: str, od_start: int, od_end: int) -> li
             f"No pointing files found for input_root={input_root!r}, OD{od_start}-OD{od_end}"
         )
     return existing
+
+
+def print_mpi_distribution(
+    comm,
+    rank: int,
+    size: int,
+    local_ods: list[int] | None = None,
+) -> None:
+    """Print the MPI distribution at the start of a run.
+
+    Gathers the hostname and assigned OD list from every rank and prints a
+    summary on rank 0.  If the run is serial (``size == 1``) a single
+    informational line is printed instead.
+
+    Args:
+        comm: The ``mpi4py`` communicator, or ``None`` for a serial run.
+        rank: MPI rank of the calling process.
+        size: Total number of MPI ranks.
+        local_ods: OD numbers assigned to this rank (optional).
+    """
+    hostname = socket.gethostname()
+
+    if size == 1:
+        msg = f"[MPI] Serial run on host {hostname}"
+        if local_ods:
+            od_info = f"ODs {local_ods[0]}-{local_ods[-1]} ({len(local_ods)} ODs)"
+            msg += f" | {od_info}"
+        print(msg, flush=True)
+        return
+
+    hostnames: list[str] = comm.gather(hostname, root=0)
+    all_ods: list[list[int] | None] = comm.gather(local_ods, root=0)
+    if rank == 0:
+        width = len(str(size - 1))
+        print(f"[MPI] Parallel run: {size} ranks", flush=True)
+        for r, h in enumerate(hostnames):
+            ods = all_ods[r] if all_ods is not None else None
+            if ods:
+                od_info = f"ODs {ods[0]}-{ods[-1]} ({len(ods)} ODs)"
+            else:
+                od_info = "no ODs assigned"
+            print(f"  rank {r:>{width}} : {h} | {od_info}", flush=True)

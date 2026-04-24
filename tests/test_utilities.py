@@ -5,11 +5,11 @@ from pquick.utilities import filter_pointing_files_by_mission_length, parse_miss
 
 def test_parse_mission_length_named_ranges():
     assert parse_mission_length("full") == (91, 974)
-    assert parse_mission_length("survey 1") == (91, 270)
-    assert parse_mission_length("survey 2") == (271, 456)
-    assert parse_mission_length("survey 3") == (457, 636)
-    assert parse_mission_length("survey 4") == (637, 807)
-    assert parse_mission_length("survey 5") == (808, 974)
+    assert parse_mission_length("survey1") == (91, 270)
+    assert parse_mission_length("survey2") == (271, 456)
+    assert parse_mission_length("survey3") == (457, 636)
+    assert parse_mission_length("survey4") == (637, 807)
+    assert parse_mission_length("survey5") == (808, 974)
 
 
 def test_parse_mission_length_explicit_range():

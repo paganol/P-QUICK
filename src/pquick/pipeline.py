@@ -22,7 +22,7 @@ from .io import (
 from .mapmaking import accumulate_tqu_matrix, init_map_matrix, solve_tqu_from_matrix
 from .pointing import build_pointing_interpolator
 from .quaternion import normalize_quaternion, quaternion_to_thetaphipsi
-from .utilities import build_pointing_file_paths, detector_map_weight, parse_mission_length
+from .utilities import build_pointing_file_paths, detector_map_weight, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution
 
 
 def _get_mpi():
@@ -107,6 +107,10 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     od_start, od_end = parse_mission_length(mission)
     all_pointing = build_pointing_file_paths(config.inputs.pointing.input_root, od_start, od_end)
     local_pointing = _local_slice(all_pointing, rank, size)
+
+    if verbose:
+        local_ods = [extract_od_from_pointing_filename(p) for p in local_pointing]
+        print_mpi_distribution(comm, rank, size, local_ods)
 
     _vprint(verbose, rank, f"Starting pipeline: {len(local_pointing)} ODs on rank {rank}/{size}")
 
