@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import time as _time
 from pathlib import Path
 from typing import cast
 
@@ -126,14 +127,20 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     hits_acc = np.zeros(matrix_acc.shape[0], dtype=np.int64)
     n_chunks_cfg = int(max(1, config.convolution.chunks))
 
+    t_resamp_total = t_conv_total = t_macc_total = 0.0
+
     for od_idx, npz_path in enumerate(local_pointing, start=1):
         _vprint(verbose, rank, f"[OD {od_idx}/{len(local_pointing)}] {npz_path.name}")
+        t_resamp_od = t_conv_od = t_macc_od = 0.0
+
+        _t0 = _time.perf_counter()
         point_us = load_pointing_npz(npz_path)
         interp = build_pointing_interpolator(
             point_us,
             coordinate_system=config.resampling.coordinate_system,
         )
         del point_us
+        t_resamp_od += _time.perf_counter() - _t0
 
         for det_idx, dinfo in enumerate(det_info, start=1):
             det_quat = np.asarray(dinfo["quat"], dtype=np.float64)
@@ -164,13 +171,15 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 if not np.any(good):
                     continue
 
+                _t0 = _time.perf_counter()
                 det_quat_chunk = interp.get_detector_quaternions(det_quat, chunk_start, chunk_len)
                 det_quat_good = det_quat_chunk[good]
                 del det_quat_chunk
-
                 theta, phi, psi = quaternion_to_thetaphipsi(det_quat_good)
                 del det_quat_good
+                t_resamp_od += _time.perf_counter() - _t0
 
+                _t0 = _time.perf_counter()
                 ptg = np.column_stack([theta, phi, psi])
                 tod = convolve_timeline(
                     sky_alm=sky_alm,
@@ -183,20 +192,44 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                     interpolator_cache=None,
                 )
                 del ptg
+                t_conv_od += _time.perf_counter() - _t0
 
+                _t0 = _time.perf_counter()
                 pix = hp.ang2pix(config.map.nside, theta, phi, nest=config.map.nest)
                 del theta, phi
-
                 accumulate_tqu_matrix(matrix_acc, pix, psi, np.asarray(tod, dtype=np.float64), det_weight)
                 np.add.at(hits_acc, pix, 1)
                 del pix, psi, tod
+                t_macc_od += _time.perf_counter() - _t0
+
+        t_resamp_total += t_resamp_od
+        t_conv_total += t_conv_od
+        t_macc_total += t_macc_od
+        _vprint(
+            verbose,
+            rank,
+            f"  [OD timing] resamp={t_resamp_od:.2f}s  conv={t_conv_od:.2f}s  macc={t_macc_od:.2f}s"
+            f"  od_total={t_resamp_od + t_conv_od + t_macc_od:.2f}s",
+        )
 
     matrix_all = _sum_reduce(comm, matrix_acc)
     del matrix_acc
     hits_all = _sum_reduce(comm, hits_acc)
     del hits_acc
 
+    _t0 = _time.perf_counter()
     t_map, q_map, u_map = solve_tqu_from_matrix(matrix_all)
+    t_solve = _time.perf_counter() - _t0
+    _vprint(
+        verbose,
+        rank,
+        f"[Timing summary]"
+        f"  resamp={t_resamp_total:.2f}s"
+        f"  conv={t_conv_total:.2f}s"
+        f"  macc={t_macc_total:.2f}s"
+        f"  solve={t_solve:.2f}s"
+        f"  total={t_resamp_total + t_conv_total + t_macc_total + t_solve:.2f}s",
+    )
     nobs00 = matrix_all[:, 0, 0]
 
     if rank != 0:
