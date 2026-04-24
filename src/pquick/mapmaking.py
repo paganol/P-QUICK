@@ -79,21 +79,32 @@ def solve_tqu_from_matrix(
     q_map = np.full(npix, hp.UNSEEN, dtype=np.float64)
     u_map = np.full(npix, hp.UNSEEN, dtype=np.float64)
 
-    for ipix in range(npix):
-        rhs = np.array([matrix[ipix, 1, 0], matrix[ipix, 2, 0], matrix[ipix, 2, 1]], dtype=np.float64)
+    hit_idx = np.where(matrix[:, 0, 0] > 0)[0]
+    if hit_idx.size == 0:
+        return t_map, q_map, u_map
 
-        # Symmetrize the matrix by copying the stored upper triangle.
-        matrix[ipix, 1, 0] = matrix[ipix, 0, 1]
-        matrix[ipix, 2, 0] = matrix[ipix, 0, 2]
-        matrix[ipix, 2, 1] = matrix[ipix, 1, 2]
+    # Work on a contiguous copy of only the hit pixels.
+    A = matrix[hit_idx].copy()  # (n_hit, 3, 3)
 
-        if matrix[ipix, 0, 0] <= 0:
-            continue
-        if np.linalg.cond(matrix[ipix]) >= cond_threshold:
-            continue
+    # Extract the RHS from the lower-left triangle before symmetrising.
+    rhs = np.stack([A[:, 1, 0], A[:, 2, 0], A[:, 2, 1]], axis=1)  # (n_hit, 3)
 
-        sol = np.linalg.solve(matrix[ipix], rhs)
-        t_map[ipix], q_map[ipix], u_map[ipix] = sol
+    # Symmetrize the normal matrices in-place.
+    A[:, 1, 0] = A[:, 0, 1]
+    A[:, 2, 0] = A[:, 0, 2]
+    A[:, 2, 1] = A[:, 1, 2]
+
+    # Vectorised condition check; reject ill-conditioned pixels.
+    cond = np.linalg.cond(A)  # (n_hit,)
+    good = cond < cond_threshold
+    if not np.any(good):
+        return t_map, q_map, u_map
+
+    sol = np.linalg.solve(A[good], rhs[good])  # (n_good, 3)
+    idx_good = hit_idx[good]
+    t_map[idx_good] = sol[:, 0]
+    q_map[idx_good] = sol[:, 1]
+    u_map[idx_good] = sol[:, 2]
 
     return t_map, q_map, u_map
 

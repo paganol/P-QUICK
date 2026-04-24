@@ -42,9 +42,10 @@ def _local_slice(items: list[Path], rank: int, size: int) -> list[Path]:
 def _sum_reduce(comm, arr: np.ndarray) -> np.ndarray:
     if comm is None:
         return arr
-    out = np.zeros_like(arr)
-    comm.Allreduce(arr, out)
-    return out
+    from mpi4py import MPI
+
+    comm.Allreduce(MPI.IN_PLACE, arr)
+    return arr
 
 
 def _vprint(enabled: bool, rank: int, msg: str) -> None:
@@ -120,6 +121,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             point_us,
             coordinate_system=config.resampling.coordinate_system,
         )
+        del point_us
 
         for det_idx, dinfo in enumerate(det_info, start=1):
             det_quat = np.asarray(dinfo["quat"], dtype=np.float64)
@@ -152,10 +154,12 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
                 det_quat_chunk = interp.get_detector_quaternions(det_quat, chunk_start, chunk_len)
                 det_quat_good = det_quat_chunk[good]
+                del det_quat_chunk
 
                 theta, phi, psi = quaternion_to_thetaphipsi(det_quat_good)
-                ptg = np.column_stack([theta, phi, psi])
+                del det_quat_good
 
+                ptg = np.column_stack([theta, phi, psi])
                 tod = convolve_timeline(
                     sky_alm=sky_alm,
                     beam_alm=beam_alm,
@@ -166,13 +170,19 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                     epsilon=config.convolution.epsilon,
                     interpolator_cache=None,
                 )
+                del ptg
 
                 pix = hp.ang2pix(config.map.nside, theta, phi, nest=config.map.nest)
+                del theta, phi
+
                 accumulate_tqu_matrix(matrix_acc, pix, psi, np.asarray(tod, dtype=np.float64), det_weight)
                 np.add.at(hits_acc, pix, 1)
+                del pix, psi, tod
 
     matrix_all = _sum_reduce(comm, matrix_acc)
+    del matrix_acc
     hits_all = _sum_reduce(comm, hits_acc)
+    del hits_acc
 
     t_map, q_map, u_map = solve_tqu_from_matrix(matrix_all)
     nobs00 = matrix_all[:, 0, 0]
