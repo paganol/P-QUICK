@@ -22,7 +22,7 @@ from .io import (
 )
 from .mapmaking import accumulate_tqu_matrix, init_map_matrix, solve_tqu_from_matrix
 from .pointing import build_pointing_interpolator
-from .quaternion import normalize_quaternion, quat_mul, quaternion_to_thetaphipsi
+from .quaternion import bore_det_to_angles, normalize_quaternion, quat_mul
 from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution
 
 
@@ -178,9 +178,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 )
 
                 _t0 = _time.perf_counter()
-                q_det_good = normalize_quaternion(quat_mul(q_bore_good, det_quat))
-                theta, phi, psi = quaternion_to_thetaphipsi(q_det_good)
-                del q_det_good
+                theta, phi, psi = bore_det_to_angles(q_bore_good, det_quat)
                 t_resamp_od += _time.perf_counter() - _t0
 
                 _t0 = _time.perf_counter()

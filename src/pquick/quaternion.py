@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
+
+try:
+    from numba import njit as _njit
+    _HAVE_NUMBA = True
+except ImportError:  # pragma: no cover
+    _HAVE_NUMBA = False
 
 
 def normalize_quaternion(q: np.ndarray, eps: float = 1e-15) -> np.ndarray:
@@ -154,6 +162,140 @@ def upsample_quaternions(
     alpha = np.clip((fine_t - t0) / np.maximum(t1 - t0, 1e-30), 0.0, 1.0)
 
     return slerp(coarse_q[idx_left], coarse_q[idx_right], alpha, eps=eps)
+
+
+# ---------------------------------------------------------------------------
+# Fused bore × detector → (theta, phi, psi)  —  hot-path kernel
+# ---------------------------------------------------------------------------
+
+def _bore_det_to_angles_numpy(
+    q_bore: np.ndarray,
+    det_quat: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Numpy fallback for :func:`bore_det_to_angles`."""
+    qx0, qy0, qz0, qw0 = q_bore[:, 0], q_bore[:, 1], q_bore[:, 2], q_bore[:, 3]
+    dx, dy, dz, dw = det_quat[0], det_quat[1], det_quat[2], det_quat[3]
+
+    # quat_mul(q_bore, det_quat) — det_quat is a fixed (4,) scalar per detector
+    qx = qw0 * dx + qx0 * dw + qy0 * dz - qz0 * dy
+    qy = qw0 * dy - qx0 * dz + qy0 * dw + qz0 * dx
+    qz = qw0 * dz + qx0 * dy - qy0 * dx + qz0 * dw
+    qw = qw0 * dw - qx0 * dx - qy0 * dy - qz0 * dz
+
+    # normalize in-place
+    nrm = np.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+    nrm = np.maximum(nrm, 1e-15)
+    qx /= nrm; qy /= nrm; qz /= nrm; qw /= nrm
+
+    # R(q) @ z  =  boresight direction
+    bx = 2.0 * (qx * qz + qy * qw)
+    by = 2.0 * (qy * qz - qx * qw)
+    bz = 1.0 - 2.0 * (qx * qx + qy * qy)
+
+    theta = np.arccos(np.clip(bz, -1.0, 1.0))
+    phi = np.mod(np.arctan2(by, bx), 2.0 * np.pi)
+
+    # R(q) @ x  =  polarisation reference direction
+    xx = 1.0 - 2.0 * (qy * qy + qz * qz)
+    xy = 2.0 * (qx * qy + qz * qw)
+    xz = 2.0 * (qx * qz - qy * qw)
+
+    sin_th = np.sqrt(np.maximum(bx * bx + by * by, 0.0))
+    safe = sin_th > 0.0
+    inv_s = np.where(safe, 1.0 / np.where(safe, sin_th, 1.0), 0.0)
+    cos_ph = bx * inv_s
+    sin_ph = by * inv_s
+
+    x_theta = xx * bz * cos_ph + xy * bz * sin_ph - xz * sin_th
+    x_phi   = -xx * sin_ph + xy * cos_ph
+    psi = np.arctan2(x_phi, x_theta)
+    return theta, phi, psi
+
+
+if _HAVE_NUMBA:
+    @_njit(fastmath=True, cache=True)
+    def _bore_det_to_angles_jit(
+        q_bore: np.ndarray,
+        det_quat: np.ndarray,
+        theta: np.ndarray,
+        phi: np.ndarray,
+        psi: np.ndarray,
+    ) -> None:
+        """Numba JIT kernel: fused quat-product + normalise + angles, no temporaries."""
+        dx = det_quat[0]; dy = det_quat[1]; dz = det_quat[2]; dw = det_quat[3]
+        TWO_PI = 2.0 * math.pi
+        for i in range(q_bore.shape[0]):
+            qx0 = q_bore[i, 0]; qy0 = q_bore[i, 1]
+            qz0 = q_bore[i, 2]; qw0 = q_bore[i, 3]
+
+            qx = qw0 * dx + qx0 * dw + qy0 * dz - qz0 * dy
+            qy = qw0 * dy - qx0 * dz + qy0 * dw + qz0 * dx
+            qz = qw0 * dz + qx0 * dy - qy0 * dx + qz0 * dw
+            qw = qw0 * dw - qx0 * dx - qy0 * dy - qz0 * dz
+
+            nrm = math.sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
+            if nrm > 1e-15:
+                qx /= nrm; qy /= nrm; qz /= nrm; qw /= nrm
+
+            bx = 2.0 * (qx * qz + qy * qw)
+            by = 2.0 * (qy * qz - qx * qw)
+            bz = 1.0 - 2.0 * (qx * qx + qy * qy)
+
+            t = math.acos(max(-1.0, min(1.0, bz)))
+            p = math.atan2(by, bx)
+            if p < 0.0:
+                p += TWO_PI
+
+            xx = 1.0 - 2.0 * (qy * qy + qz * qz)
+            xy = 2.0 * (qx * qy + qz * qw)
+            xz = 2.0 * (qx * qz - qy * qw)
+
+            sin_th = math.sqrt(max(0.0, bx*bx + by*by))
+            if sin_th > 0.0:
+                inv_s = 1.0 / sin_th
+                cos_ph = bx * inv_s
+                sin_ph = by * inv_s
+            else:
+                cos_ph = 1.0
+                sin_ph = 0.0
+
+            x_t = xx * bz * cos_ph + xy * bz * sin_ph - xz * sin_th
+            x_p = -xx * sin_ph + xy * cos_ph
+
+            theta[i] = t
+            phi[i]   = p
+            psi[i]   = math.atan2(x_p, x_t)
+
+
+def bore_det_to_angles(
+    q_bore: np.ndarray,
+    det_quat: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Convert frame-rotated boresight quaternions and a detector offset quaternion
+    directly to sky angles ``(theta, phi, psi)`` in a single fused operation.
+
+    Computes ``q = q_bore ⊗ det_quat`` (normalised) then extracts the HEALPix angles
+    without any intermediate array allocation beyond the three output arrays.
+    Uses a Numba JIT kernel when available, otherwise falls back to a vectorised
+    NumPy implementation.
+
+    Args:
+        q_bore: Frame-rotated boresight quaternions, shape ``(N, 4)``, ``(x, y, z, w)``.
+        det_quat: Fixed detector offset quaternion, shape ``(4,)``.
+
+    Returns:
+        Tuple ``(theta, phi, psi)`` of float64 arrays of shape ``(N,)``.
+    """
+    q_bore = np.ascontiguousarray(q_bore, dtype=np.float64)
+    det_quat = np.ascontiguousarray(det_quat, dtype=np.float64)
+    if _HAVE_NUMBA:
+        N = q_bore.shape[0]
+        theta = np.empty(N, dtype=np.float64)
+        phi   = np.empty(N, dtype=np.float64)
+        psi   = np.empty(N, dtype=np.float64)
+        _bore_det_to_angles_jit(q_bore, det_quat, theta, phi, psi)
+        return theta, phi, psi
+    return _bore_det_to_angles_numpy(q_bore, det_quat)
 
 
 def quaternion_to_thetaphipsi(q: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

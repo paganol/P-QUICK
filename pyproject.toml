@@ -21,6 +21,9 @@ dependencies = [
 dev = [
   "pytest>=8.0",
 ]
+performance = [
+  "numba>=0.59",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
