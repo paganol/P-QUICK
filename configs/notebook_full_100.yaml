@@ -14,10 +14,11 @@ detector_selection:
   - 100-2b
 resampling:
   coordinate_system: galactic
+nthreads: 0
+
 convolution:
   lmax: 16
   mmax: 6
-  nthreads: 0
   epsilon: 1.0e-05
   chunks: 1
 map:

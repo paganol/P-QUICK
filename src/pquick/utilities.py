@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import socket
 from pathlib import Path
@@ -284,3 +285,26 @@ def suggest_tasks_per_node(nside: int, node_memory_mb: float, cores_per_node: in
     mem_per_rank = estimate_memory_per_rank_mb(nside)
     max_tasks = int(node_memory_mb / mem_per_rank)
     return min(max_tasks, cores_per_node)
+
+
+def resolve_nthreads(nthreads: int) -> int:
+    """Resolve the effective number of threads to use for both ducc0 and numba.
+
+    Convention:
+    - ``nthreads == 0``: read ``OMP_NUM_THREADS`` from the environment;
+      fall back to 1 if the variable is unset or invalid.
+    - ``nthreads > 0``: use the given value as-is.
+
+    Args:
+        nthreads: Value from the ``convolution.nthreads`` config key.
+
+    Returns:
+        Resolved thread count (always >= 1).
+    """
+    if nthreads != 0:
+        return max(1, int(nthreads))
+    raw = os.environ.get("OMP_NUM_THREADS", "")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 1

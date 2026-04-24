@@ -4,19 +4,20 @@ inputs:
   rimo_file: inputs/RIMOs/RIMO_HFI_npipe5v16_symmetrized.fits
   pointing:
     input_root: inputs/pointings/processed_od_
-    mission_length: 91-91
+    mission_length: 91-99
 
 detector_selection:
-  channel: 100ds1
+  channel: 100ghz
   detectors: null
 
 resampling:
   coordinate_system: galactic
 
+nthreads: 1
+
 convolution:
   lmax: 1024
   mmax: 6
-  nthreads: 0
   epsilon: 1.0e-5
   chunks: 1
 

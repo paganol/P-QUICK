@@ -23,7 +23,7 @@ from .io import (
 from .mapmaking import accumulate_tqu_matrix, init_map_matrix, solve_tqu_from_matrix
 from .pointing import build_pointing_interpolator
 from .quaternion import bore_det_to_angles, normalize_quaternion, quat_mul
-from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution
+from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution, resolve_nthreads
 
 
 def _get_mpi():
@@ -73,6 +73,11 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     """
     comm, rank, size = _get_mpi()
     verbose = bool(config.verbose)
+
+    import numba
+    nthreads = resolve_nthreads(config.nthreads)
+    numba.set_num_threads(nthreads)
+    _vprint(verbose, rank, f"[Threads] nthreads={nthreads} (ducc0 + numba)")
 
     sky_alm = load_sky_alm(config.inputs.sky_alm)
     lmax_alm = infer_lmax_from_alm(sky_alm)
@@ -189,7 +194,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                     ptg_thetaphipsi=ptg,
                     lmax=config.convolution.lmax,
                     mmax=config.convolution.mmax,
-                    nthreads=config.convolution.nthreads,
+                    nthreads=nthreads,
                     epsilon=config.convolution.epsilon,
                     interpolator_cache=None,
                 )

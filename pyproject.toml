@@ -15,14 +15,12 @@ dependencies = [
   "PyYAML>=6.0",
   "ducc0>=0.41.0",
   "mpi4py>=3.1",
+  "numba>=0.59",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
-]
-performance = [
-  "numba>=0.59",
 ]
 
 [tool.setuptools]

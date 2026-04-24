@@ -56,14 +56,12 @@ class ConvolutionConfig:
     Attributes:
         lmax: Maximum multipole ℓ for both sky and beam ALMs.
         mmax: Maximum azimuthal order *m* of the beam (``kmax`` in ducc0 notation).
-        nthreads: Number of OpenMP threads passed to ducc0 (0 = auto-detect).
         epsilon: Interpolation accuracy target for the ducc0 gridder.
         chunks: Number of equal-length interpolation calls per OD (1 = whole OD at once).
     """
 
     lmax: int
     mmax: int
-    nthreads: int = 0
     epsilon: float = 1e-5
     chunks: int = 1
 
@@ -96,7 +94,12 @@ class OutputConfig:
 
 @dataclass
 class PipelineConfig:
-    """Top-level configuration object aggregating all sub-configs for a pipeline run."""
+    """Top-level configuration object aggregating all sub-configs for a pipeline run.
+
+    Attributes:
+        nthreads: Number of threads for ducc0 and numba.
+            ``0`` = read ``OMP_NUM_THREADS`` from the environment (fallback 1).
+    """
 
     inputs: InputsConfig
     detector_selection: DetectorSelection
@@ -105,6 +108,7 @@ class PipelineConfig:
     map: MapConfig
     output: OutputConfig
     verbose: bool = False
+    nthreads: int = 0
 
 
 def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
@@ -134,7 +138,6 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
         convolution=ConvolutionConfig(
             lmax=int(data["convolution"]["lmax"]),
             mmax=int(data["convolution"].get("mmax", data["convolution"].get("kmax"))),
-            nthreads=int(data.get("convolution", {}).get("nthreads", 0)),
             epsilon=float(data.get("convolution", {}).get("epsilon", 1e-5)),
             chunks=int(data.get("convolution", {}).get("chunks", 1)),
         ),
@@ -145,6 +148,7 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
         ),
         output=OutputConfig(output_dir=str(data.get("output", {}).get("output_dir", "outputs"))),
         verbose=bool(data.get("verbose", False)),
+        nthreads=int(data.get("nthreads", 0)),
     )
 
 
