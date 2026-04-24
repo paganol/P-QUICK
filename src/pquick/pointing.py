@@ -82,6 +82,36 @@ class PointingInterpolator:
         )
         return normalize_quaternion(quat_mul(self.frame_rotation, q))
 
+    def get_boresight_quaternions(self, start: int, count: int) -> np.ndarray:
+        """Return frame-rotated boresight quaternions for a chunk of native samples.
+
+        Calls ``ducc0.PointingProvider`` once with an identity detector quaternion
+        and applies the frame rotation.  The result can be composed with each
+        detector's fixed offset via a cheap batched :func:`~pquick.quaternion.quat_mul`,
+        avoiding redundant SLERP interpolation across detectors.
+
+        Args:
+            start: Index of the first native sample in the chunk.
+            count: Number of native samples to evaluate.
+
+        Returns:
+            Float64 array of shape ``(count, 4)`` containing frame-rotated boresight
+            unit quaternions.
+        """
+        t0_s = float(start) / float(self.native_rate_hz)
+        identity = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
+        q = np.asarray(
+            self.provider.get_rotated_quaternions(
+                t0_s,
+                float(self.native_rate_hz),
+                identity,
+                int(count),
+                False,
+            ),
+            dtype=np.float64,
+        )
+        return normalize_quaternion(quat_mul(self.frame_rotation, q))
+
 
 def _rotation_matrix_to_quaternion(rotation: np.ndarray) -> np.ndarray:
     rotation = np.asarray(rotation, dtype=np.float64)

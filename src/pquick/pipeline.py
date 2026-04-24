@@ -22,7 +22,7 @@ from .io import (
 )
 from .mapmaking import accumulate_tqu_matrix, init_map_matrix, solve_tqu_from_matrix
 from .pointing import build_pointing_interpolator
-from .quaternion import normalize_quaternion, quaternion_to_thetaphipsi
+from .quaternion import normalize_quaternion, quat_mul, quaternion_to_thetaphipsi
 from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution
 
 
@@ -142,41 +142,45 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         del point_us
         t_resamp_od += _time.perf_counter() - _t0
 
-        for det_idx, dinfo in enumerate(det_info, start=1):
-            det_quat = np.asarray(dinfo["quat"], dtype=np.float64)
-            beam_alm = np.asarray(dinfo["beam_alm"], dtype=np.complex128)
-            det_weight = cast(float, dinfo["weight"])
-            det_name = str(dinfo["name"])
+        chunk_samples = max(1, (interp.n_native + n_chunks_cfg - 1) // n_chunks_cfg)
+        n_chunks = (interp.n_native + chunk_samples - 1) // chunk_samples
 
+        for chunk_idx, chunk_start in enumerate(range(0, interp.n_native, chunk_samples), start=1):
+            chunk_end = min(chunk_start + chunk_samples, interp.n_native)
+            chunk_len = chunk_end - chunk_start
+            flag_chunk = interp.flag_native[chunk_start:chunk_end]
+            good = flag_chunk == 0
+            ngood = int(np.count_nonzero(good))
             _vprint(
                 verbose,
                 rank,
-                f"  [DET {det_idx}/{len(det_info)}] {det_name} | native samples={interp.n_native}",
+                f"  [chunk {chunk_idx}/{n_chunks}] samples {chunk_start}:{chunk_end}"
+                f" | good={ngood}/{chunk_len} | n_native={interp.n_native}",
             )
+            if not np.any(good):
+                continue
 
-            chunk_samples = max(1, (interp.n_native + n_chunks_cfg - 1) // n_chunks_cfg)
-            n_chunks = (interp.n_native + chunk_samples - 1) // chunk_samples
+            # Interpolate boresight once per chunk; apply per-detector offset in numpy.
+            _t0 = _time.perf_counter()
+            q_bore_good = interp.get_boresight_quaternions(chunk_start, chunk_len)[good]
+            t_resamp_od += _time.perf_counter() - _t0
 
-            for chunk_idx, chunk_start in enumerate(range(0, interp.n_native, chunk_samples), start=1):
-                chunk_end = min(chunk_start + chunk_samples, interp.n_native)
-                chunk_len = chunk_end - chunk_start
-                flag_chunk = interp.flag_native[chunk_start:chunk_end]
-                good = flag_chunk == 0
-                ngood = int(np.count_nonzero(good))
+            for det_idx, dinfo in enumerate(det_info, start=1):
+                det_quat = np.asarray(dinfo["quat"], dtype=np.float64)
+                beam_alm = np.asarray(dinfo["beam_alm"], dtype=np.complex128)
+                det_weight = cast(float, dinfo["weight"])
+                det_name = str(dinfo["name"])
+
                 _vprint(
                     verbose,
                     rank,
-                    f"    [chunk {chunk_idx}/{n_chunks}] samples {chunk_start}:{chunk_end} | good={ngood}/{chunk_len}",
+                    f"    [DET {det_idx}/{len(det_info)}] {det_name}",
                 )
-                if not np.any(good):
-                    continue
 
                 _t0 = _time.perf_counter()
-                det_quat_chunk = interp.get_detector_quaternions(det_quat, chunk_start, chunk_len)
-                det_quat_good = det_quat_chunk[good]
-                del det_quat_chunk
-                theta, phi, psi = quaternion_to_thetaphipsi(det_quat_good)
-                del det_quat_good
+                q_det_good = normalize_quaternion(quat_mul(q_bore_good, det_quat))
+                theta, phi, psi = quaternion_to_thetaphipsi(q_det_good)
+                del q_det_good
                 t_resamp_od += _time.perf_counter() - _t0
 
                 _t0 = _time.perf_counter()
@@ -201,6 +205,8 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 np.add.at(hits_acc, pix, 1)
                 del pix, psi, tod
                 t_macc_od += _time.perf_counter() - _t0
+
+            del q_bore_good
 
         t_resamp_total += t_resamp_od
         t_conv_total += t_conv_od
