@@ -165,11 +165,22 @@ def _to_text(value: object) -> str:
     return str(value).strip()
 
 
-def _rimo_detector_quat(phi_uv_deg: float, theta_uv_deg: float, psi_uv_deg: float) -> np.ndarray:
+def _rimo_detector_quat(
+    phi_uv_deg: float,
+    theta_uv_deg: float,
+    psi_uv_deg: float,
+    psi_pol_deg: float = 0.0,
+) -> np.ndarray:
+    """Build the ZYZ-convention detector quaternion for the Dxx beam frame.
+
+    The Dxx (beam) frame requires the full rotation angle ``psi_uv + psi_pol``.
+    See qp_planck utilities.load_RIMO for the reference convention.
+    """
     degree = np.pi / 180.0
     phi = phi_uv_deg * degree
     theta = theta_uv_deg * degree
-    psi = (psi_uv_deg) * degree - phi
+    # psi_uv + psi_pol gives the Dxx orientation; subtract phi per ZYZ convention
+    psi = (psi_uv_deg + psi_pol_deg) * degree - phi
 
     quat = np.zeros(4, dtype=np.float64)
     quat[3] = np.cos(0.5 * theta) * np.cos(0.5 * (phi + psi))
@@ -204,6 +215,7 @@ def load_rimo_detectors(rimo_path: str | Path) -> dict[str, dict[str, np.ndarray
         has_phi = "PHI_UV" in names
         has_theta = "THETA_UV" in names
         has_psi = "PSI_UV" in names
+        has_psi_pol = "PSI_POL" in names
 
         for row in tab:
             det = _to_text(row[det_col])
@@ -212,10 +224,12 @@ def load_rimo_detectors(rimo_path: str | Path) -> dict[str, dict[str, np.ndarray
                 phi_uv = float(row["PHI_UV"])
                 theta_uv = float(row["THETA_UV"])
                 psi_uv = float(row["PSI_UV"])
+                psi_pol = float(row["PSI_POL"]) if has_psi_pol else 0.0
                 rec["phi_uv"] = phi_uv
                 rec["theta_uv"] = theta_uv
                 rec["psi_uv"] = psi_uv
-                rec["quat"] = _rimo_detector_quat(phi_uv, theta_uv, psi_uv)
+                rec["psi_pol"] = psi_pol
+                rec["quat"] = _rimo_detector_quat(phi_uv, theta_uv, psi_uv, psi_pol)
             out[det] = rec
     if not out:
         raise ValueError(f"No detectors loaded from RIMO file: {rimo_path}")
@@ -299,24 +313,24 @@ def detector_to_beam_file(beams_dir: str | Path, detector: str) -> Path:
     raise FileNotFoundError(f"No beam file found for detector '{detector}' in {bdir}")
 
 
-def load_beam_alm(path: str | Path, lmax: int | None = None, kmax: int | None = None) -> np.ndarray:
+def load_beam_alm(path: str | Path, lmax: int | None = None, mmax: int | None = None) -> np.ndarray:
     """Read beam spherical-harmonic coefficients from a Planck-format FITS file.
 
     The FITS table must contain ``index``, ``real``, and ``imag`` columns where
     ``index`` encodes *(ℓ, m)* using the Planck sequential convention.  The
     coefficients are repacked into a healpy m-major array truncated at *lmax*
-    and *kmax*.
+    and *mmax*.
 
     Args:
         path: Path to the beam FITS file (``blm_*.fits``).
         lmax: Maximum ℓ to retain; defaults to the value found in the file.
-        kmax: Maximum azimuthal order *m* to retain; defaults to the file value.
+        mmax: Maximum azimuthal order *m* to retain; defaults to the file value.
 
     Returns:
         Complex128 array of shape ``(1, nalm_beam)`` in healpy m-major order.
 
     Raises:
-        ValueError: If the requested *lmax* or *kmax* exceeds what the file provides.
+        ValueError: If the requested *lmax* or *mmax* exceeds what the file provides.
     """
     p = Path(path)
     with fits.open(p) as hdul:
@@ -328,17 +342,17 @@ def load_beam_alm(path: str | Path, lmax: int | None = None, kmax: int | None = 
                 ell, emm = _beam_index_to_lm(np.asarray(data["index"], dtype=np.int64))
 
                 src_lmax = int(ell.max())
-                src_kmax = int(emm.max())
+                src_mmax = int(emm.max())
                 use_lmax = src_lmax if lmax is None else int(lmax)
-                use_kmax = src_kmax if kmax is None else int(kmax)
+                use_mmax = src_mmax if mmax is None else int(mmax)
 
                 if use_lmax > src_lmax:
                     raise ValueError(f"Requested lmax={use_lmax} exceeds beam lmax={src_lmax} for {p}")
-                if use_kmax > src_kmax:
-                    raise ValueError(f"Requested kmax={use_kmax} exceeds beam kmax={src_kmax} for {p}")
+                if use_mmax > src_mmax:
+                    raise ValueError(f"Requested mmax={use_mmax} exceeds beam mmax={src_mmax} for {p}")
 
-                mask = (ell <= use_lmax) & (emm <= use_kmax)
-                packed = _pack_truncated_alm(coeff[mask], ell[mask], emm[mask], use_lmax, use_kmax)
+                mask = (ell <= use_lmax) & (emm <= use_mmax)
+                packed = _pack_truncated_alm(coeff[mask], ell[mask], emm[mask], use_lmax, use_mmax)
                 return packed[None, :]
 
     # Fallback for more standard FITS ALM storage.

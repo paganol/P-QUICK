@@ -27,14 +27,17 @@ class PointingConfig:
 
     Attributes:
         input_root: Common path prefix for pointing NPZ files, e.g.
-            ``"inputs/pointings/processed_od_"``. Files are resolved as
-            ``{input_root}{od:04d}.npz`` for each OD in the mission-length range.
+            ``"inputs/pointings/processed_od_"``.
         mission_length: OD selector (e.g. ``"full"``, ``"survey 2"``,
             or explicit ``"91-99"``). Defaults to ``"full"`` when omitted.
+        use_flag: If ``True`` (default), flagged samples are excluded from the
+            convolution and map accumulation. Set to ``False`` to ignore the
+            flag array and process all samples.
     """
 
     input_root: str
     mission_length: str | None = None
+    use_flag: bool = True
 
 
 @dataclass
@@ -126,6 +129,7 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
             pointing=PointingConfig(
                 input_root=data["inputs"]["pointing"]["input_root"],
                 mission_length=data["inputs"]["pointing"].get("mission_length"),
+                use_flag=bool(data["inputs"]["pointing"].get("use_flag", True)),
             ),
         ),
         detector_selection=DetectorSelection(

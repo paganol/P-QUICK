@@ -5,6 +5,7 @@ inputs:
   pointing:
     input_root: inputs/pointings/processed_od_
     mission_length: 91-99
+    use_flag: true
 
 detector_selection:
   channel: 100ghz

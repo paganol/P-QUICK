@@ -94,7 +94,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         beam_alm = load_beam_alm(
             beam_file,
             lmax=config.convolution.lmax,
-            kmax=config.convolution.mmax,
+            mmax=config.convolution.mmax,
         )
         dmeta = det_meta.get(det, {})
         dquat = normalize_quaternion(
@@ -154,7 +154,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             chunk_end = min(chunk_start + chunk_samples, interp.n_native)
             chunk_len = chunk_end - chunk_start
             flag_chunk = interp.flag_native[chunk_start:chunk_end]
-            good = flag_chunk == 0
+            good = (flag_chunk == 0) if config.inputs.pointing.use_flag else np.ones(chunk_len, dtype=bool)
             ngood = int(np.count_nonzero(good))
             _vprint(
                 verbose,

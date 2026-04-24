@@ -5,6 +5,7 @@ inputs:
   pointing:
     input_root: inputs/pointings/processed_od_
     mission_length: full
+    use_flag: true
 detector_selection:
   channel: null
   detectors:
