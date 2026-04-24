@@ -187,7 +187,15 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 t_resamp_od += _time.perf_counter() - _t0
 
                 _t0 = _time.perf_counter()
-                ptg = np.column_stack([theta, phi, psi])
+                # The Planck beam files (blm_*.fits) are defined in the Dxx frame
+                # using the Ludwig III convention (PDD sec 5.5), where the co-polar
+                # direction is along Y_Dxx, not X_Dxx.  ducc0 totalconvolve uses the
+                # x-axis of the arriving frame as psi=0, so we must rotate psi by
+                # -pi/2 to align the beam's co-polar axis with ducc0's reference.
+                # The uncorrected psi (x-axis orientation) is still the correct
+                # polarisation angle for the map-making normal equations below.
+                psi_conv = psi - 0.5 * np.pi
+                ptg = np.column_stack([theta, phi, psi_conv])
                 tod = convolve_timeline(
                     sky_alm=sky_alm,
                     beam_alm=beam_alm,
@@ -198,7 +206,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                     epsilon=config.convolution.epsilon,
                     interpolator_cache=None,
                 )
-                del ptg
+                del ptg, psi_conv
                 t_conv_od += _time.perf_counter() - _t0
 
                 _t0 = _time.perf_counter()
