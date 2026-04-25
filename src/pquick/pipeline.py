@@ -22,7 +22,7 @@ from .io import (
 )
 from .mapmaking import accumulate_tqu_matrix, init_map_matrix, solve_tqu_from_matrix
 from .pointing import build_pointing_interpolator
-from .quaternion import bore_det_to_angles, normalize_quaternion, quat_mul
+from .quaternion import bore_det_to_angles, bore_det_to_ptg, normalize_quaternion, quat_mul
 from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution, resolve_nthreads
 
 
@@ -149,6 +149,12 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
         chunk_samples = max(1, (interp.n_native + n_chunks_cfg - 1) // n_chunks_cfg)
         n_chunks = (interp.n_native + chunk_samples - 1) // chunk_samples
+        # Pre-allocate reusable buffers for the pointing array and psi (mapmaking).
+        # These are sized for the largest possible chunk and reused across all
+        # chunks and detectors, eliminating ~7 × chunk_samples × 8-byte allocations
+        # (theta, phi, psi, psi_conv, column_stack) per detector per chunk.
+        ptg_buf = np.empty((chunk_samples, 3), dtype=np.float64)
+        psi_buf = np.empty(chunk_samples, dtype=np.float64)
 
         for chunk_idx, chunk_start in enumerate(range(0, interp.n_native, chunk_samples), start=1):
             chunk_end = min(chunk_start + chunk_samples, interp.n_native)
@@ -165,9 +171,11 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             if not np.any(good):
                 continue
 
-            # Interpolate boresight once per chunk; apply per-detector offset in numpy.
+            # Interpolate boresight once per chunk; skip the [good] boolean-index copy
+            # when all samples are unflagged (avoids an unnecessary (chunk_len, 4) copy).
             _t0 = _time.perf_counter()
-            q_bore_good = interp.get_boresight_quaternions(chunk_start, chunk_len)[good]
+            q_bore_all = interp.get_boresight_quaternions(chunk_start, chunk_len)
+            q_bore_good = q_bore_all if ngood == chunk_len else q_bore_all[good]
             t_resamp_od += _time.perf_counter() - _t0
 
             for det_idx, dinfo in enumerate(det_info, start=1):
@@ -182,42 +190,34 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                     f"    [DET {det_idx}/{len(det_info)}] {det_name}",
                 )
 
+                # Fill pre-allocated buffers directly — no temporary arrays.
+                # ptg_buf[:, 0/1/2] = theta / phi / (psi - pi/2)  (ducc0 Ludwig-III offset)
+                # psi_buf[:] = psi  (polarisation angle for mapmaking, without offset)
                 _t0 = _time.perf_counter()
-                theta, phi, psi = bore_det_to_angles(q_bore_good, det_quat)
+                bore_det_to_ptg(q_bore_good, det_quat, ptg_buf[:ngood], psi_buf[:ngood])
                 t_resamp_od += _time.perf_counter() - _t0
 
                 _t0 = _time.perf_counter()
-                # The Planck beam files (blm_*.fits) are defined in the Dxx frame
-                # using the Ludwig III convention (PDD sec 5.5), where the co-polar
-                # direction is along Y_Dxx, not X_Dxx.  ducc0 totalconvolve uses the
-                # x-axis of the arriving frame as psi=0, so we must rotate psi by
-                # -pi/2 to align the beam's co-polar axis with ducc0's reference.
-                # The uncorrected psi (x-axis orientation) is still the correct
-                # polarisation angle for the map-making normal equations below.
-                psi_conv = psi - 0.5 * np.pi
-                ptg = np.column_stack([theta, phi, psi_conv])
                 tod = convolve_timeline(
                     sky_alm=sky_alm,
                     beam_alm=beam_alm,
-                    ptg_thetaphipsi=ptg,
+                    ptg_thetaphipsi=ptg_buf[:ngood],
                     lmax=config.convolution.lmax,
                     mmax=config.convolution.mmax,
                     nthreads=nthreads,
                     epsilon=config.convolution.epsilon,
                     interpolator_cache=None,
                 )
-                del ptg, psi_conv
                 t_conv_od += _time.perf_counter() - _t0
 
                 _t0 = _time.perf_counter()
-                pix = hp.ang2pix(config.map.nside, theta, phi, nest=config.map.nest)
-                del theta, phi
-                accumulate_tqu_matrix(matrix_acc, pix, psi, np.asarray(tod, dtype=np.float64), det_weight)
+                pix = hp.ang2pix(config.map.nside, ptg_buf[:ngood, 0], ptg_buf[:ngood, 1], nest=config.map.nest)
+                accumulate_tqu_matrix(matrix_acc, pix, psi_buf[:ngood], np.asarray(tod, dtype=np.float64), det_weight)
                 np.add.at(hits_acc, pix, 1)
-                del pix, psi, tod
+                del pix, tod
                 t_macc_od += _time.perf_counter() - _t0
 
-            del q_bore_good
+            del q_bore_all, q_bore_good
 
         t_resamp_total += t_resamp_od
         t_conv_total += t_conv_od

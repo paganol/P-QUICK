@@ -245,6 +245,107 @@ def bore_det_to_angles(
     return theta, phi, psi
 
 
+# ---------------------------------------------------------------------------
+# Buffer-filling variant — eliminates all temporary array allocations in the
+# per-detector hot-path by writing (theta, phi, psi+offset) directly into a
+# pre-allocated (N, 3) ptg buffer and psi into a separate (N,) buffer.
+# ---------------------------------------------------------------------------
+
+@_njit(fastmath=True, cache=True)
+def _bore_det_to_ptg_jit(
+    q_bore: np.ndarray,
+    det_quat: np.ndarray,
+    ptg: np.ndarray,
+    psi_out: np.ndarray,
+    psi_offset: float,
+) -> None:
+    """Fused quat-product + angles, writing into pre-allocated output buffers.
+
+    ``ptg[:, 0] = theta``, ``ptg[:, 1] = phi``, ``ptg[:, 2] = psi + psi_offset``.
+    ``psi_out[:] = psi``  (without offset, for the mapmaking normal equations).
+    """
+    dx = det_quat[0]; dy = det_quat[1]; dz = det_quat[2]; dw = det_quat[3]
+    TWO_PI = 2.0 * math.pi
+    for i in range(q_bore.shape[0]):
+        qx0 = q_bore[i, 0]; qy0 = q_bore[i, 1]
+        qz0 = q_bore[i, 2]; qw0 = q_bore[i, 3]
+
+        qx = qw0 * dx + qx0 * dw + qy0 * dz - qz0 * dy
+        qy = qw0 * dy - qx0 * dz + qy0 * dw + qz0 * dx
+        qz = qw0 * dz + qx0 * dy - qy0 * dx + qz0 * dw
+        qw = qw0 * dw - qx0 * dx - qy0 * dy - qz0 * dz
+
+        nrm = math.sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
+        if nrm > 1e-15:
+            qx /= nrm; qy /= nrm; qz /= nrm; qw /= nrm
+
+        bx = 2.0 * (qx * qz + qy * qw)
+        by = 2.0 * (qy * qz - qx * qw)
+        bz = 1.0 - 2.0 * (qx * qx + qy * qy)
+
+        t = math.acos(max(-1.0, min(1.0, bz)))
+        p = math.atan2(by, bx)
+        if p < 0.0:
+            p += TWO_PI
+
+        xx = 1.0 - 2.0 * (qy * qy + qz * qz)
+        xy = 2.0 * (qx * qy + qz * qw)
+        xz = 2.0 * (qx * qz - qy * qw)
+
+        sin_th = math.sqrt(max(0.0, bx*bx + by*by))
+        if sin_th > 0.0:
+            inv_s = 1.0 / sin_th
+            cos_ph = bx * inv_s
+            sin_ph = by * inv_s
+        else:
+            cos_ph = 1.0
+            sin_ph = 0.0
+
+        x_t = xx * bz * cos_ph + xy * bz * sin_ph - xz * sin_th
+        x_p = -xx * sin_ph + xy * cos_ph
+        ps = math.atan2(x_p, x_t)
+
+        ptg[i, 0] = t
+        ptg[i, 1] = p
+        ptg[i, 2] = ps + psi_offset
+        psi_out[i] = ps
+
+
+_PSI_CONV_OFFSET = -0.5 * math.pi
+
+
+def bore_det_to_ptg(
+    q_bore: np.ndarray,
+    det_quat: np.ndarray,
+    ptg: np.ndarray,
+    psi_out: np.ndarray,
+    psi_offset: float = _PSI_CONV_OFFSET,
+) -> None:
+    """Fill pre-allocated pointing and psi buffers from boresight quaternions.
+
+    Equivalent to calling :func:`bore_det_to_angles` and then building the
+    ``(N, 3)`` pointing array for ducc0, but without any temporary allocations.
+
+    After the call::
+
+        ptg[:, 0] = theta          # colatitude [0, pi]
+        ptg[:, 1] = phi            # longitude  [0, 2pi)
+        ptg[:, 2] = psi + offset   # psi with Ludwig-III / ducc0 offset (-pi/2)
+        psi_out[:] = psi           # polarisation angle for map-making
+
+    Args:
+        q_bore: Frame-rotated boresight quaternions, shape ``(N, 4)``, ``(x, y, z, w)``.
+        det_quat: Fixed detector offset quaternion, shape ``(4,)``.
+        ptg: Pre-allocated output array, shape ``(N, 3)``, C-contiguous float64.
+        psi_out: Pre-allocated output array, shape ``(N,)``, float64.
+        psi_offset: Scalar added to psi in column 2 of *ptg*.  Default is ``-pi/2``
+            (Ludwig III / ducc0 co-polar convention).
+    """
+    q_bore = np.ascontiguousarray(q_bore, dtype=np.float64)
+    det_quat = np.ascontiguousarray(det_quat, dtype=np.float64)
+    _bore_det_to_ptg_jit(q_bore, det_quat, ptg, psi_out, float(psi_offset))
+
+
 def quaternion_to_thetaphipsi(q: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Convert unit quaternions to HEALPix sky angles ``(theta, phi, psi)``.
 
