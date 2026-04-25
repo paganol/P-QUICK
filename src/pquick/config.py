@@ -22,22 +22,33 @@ class DetectorSelection:
 
 
 @dataclass
-class PointingConfig:
-    """Configuration for locating and selecting input pointing NPZ files.
+class InputsConfig:
+    """Paths to all pipeline inputs.
 
     Attributes:
-        input_root: Common path prefix for pointing NPZ files, e.g.
-            ``"inputs/pointings/processed_od_"``.
+        sky_alm: Sky ALM file path.
+        beams_dir: Directory with detector beam ALM FITS files.
+        rimo_file: RIMO FITS path.
         mission_length: OD selector (e.g. ``"full"``, ``"survey 2"``,
             or explicit ``"91-99"``). Defaults to ``"full"`` when omitted.
-        use_flag: If ``True`` (default), flagged samples are excluded from the
-            convolution and map accumulation. Set to ``False`` to ignore the
-            flag array and process all samples.
+        pointings: Prefix for pointing NPZ files. The pipeline appends
+            ``od_{OD:04d}.npz``.
+            Example: ``inputs/pointings/pointing_`` ->
+            ``inputs/pointings/pointing_od_0091.npz``.
+        flags: Prefix for flags NPZ files. The pipeline appends
+            ``{FREQ:03d}ghz_od_{OD:04d}.npz``.
+            Example: ``inputs/flags/flags_`` ->
+            ``inputs/flags/flags_100ghz_od_0091.npz``.
+            When ``None`` (default) or when the per-OD file is absent, flags
+            are not applied and all samples are treated as good.
     """
 
-    input_root: str
+    sky_alm: str
+    beams_dir: str
+    rimo_file: str
     mission_length: str | None = None
-    use_flag: bool = True
+    pointings: str = "inputs/pointings/pointing_"
+    flags: str | None = None
 
 
 @dataclass
@@ -79,16 +90,6 @@ class MapConfig:
 
 
 @dataclass
-class InputsConfig:
-    """Paths to all pipeline inputs: sky ALMs, beam directory, RIMO, and pointings."""
-
-    sky_alm: str
-    beams_dir: str
-    rimo_file: str
-    pointing: PointingConfig
-
-
-@dataclass
 class OutputConfig:
     """Specifies the directory where output FITS maps are written."""
 
@@ -126,11 +127,9 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
             sky_alm=data["inputs"]["sky_alm"],
             beams_dir=data["inputs"]["beams_dir"],
             rimo_file=str(data["inputs"]["rimo_file"]),
-            pointing=PointingConfig(
-                input_root=data["inputs"]["pointing"]["input_root"],
-                mission_length=data["inputs"]["pointing"].get("mission_length"),
-                use_flag=bool(data["inputs"]["pointing"].get("use_flag", True)),
-            ),
+            mission_length=(str(data["inputs"].get("mission_length")) if data["inputs"].get("mission_length") is not None else None),
+            pointings=str(data["inputs"].get("pointings", "inputs/pointings/pointing_")),
+            flags=(str(data["inputs"]["flags"]) if data["inputs"].get("flags") is not None else None),
         ),
         detector_selection=DetectorSelection(
             channel=channel,

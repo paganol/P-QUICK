@@ -8,7 +8,7 @@ Produces two sets of compressed NPZ files:
 
 1) Pointing file (one per OD):
      pointing_od_{OD:04d}.npz
-   Keys: time, qx, qy, qz, qs, sampling_rate_hz, original_indices
+   Keys: t0_ns, qx, qy, qz, qs, sampling_rate_hz, idx_first, idx_last, idx_step
 
 2) Per-channel flag file (one per channel per OD):
      flags_{FREQ:03d}ghz_od_{OD:04d}.npz
@@ -36,7 +36,7 @@ MISS03_DIR = Path("/global/cfs/cdirs/cmb/data/planck2020/npipe/hfi_miss03")
 REPROCD_DIR = Path("/global/cfs/cdirs/cmb/data/planck2020/npipe/hfi_toi_reprocessed")
 OUTPUT_DIR = Path("./planck_extracted_data")
 
-UNDERSAMPLE_FACTOR = 3000
+UNDERSAMPLE_FACTOR = 1000
 
 OBT_MASK = np.uint8(0x01)
 ATT_MASK = np.uint8(0x02)
@@ -167,13 +167,15 @@ def extract_pointing(
     out_path = output_dir / f"pointing_od_{od_str}.npz"
     np.savez_compressed(
         out_path,
-        time=obt_time[indices],
+        t0_ns=np.array([float(obt_time[indices[0]])], dtype=np.float64),
         qx=qx[indices],
         qy=qy[indices],
         qz=qz[indices],
         qs=qs[indices],
         sampling_rate_hz=_sampling_rate_hz(obt_time),
-        original_indices=indices,
+        idx_first=np.array([indices[0]], dtype=np.int64),
+        idx_last=np.array([indices[-1]], dtype=np.int64),
+        idx_step=np.array([undersample], dtype=np.int64),
     )
     return out_path, common_flag
 

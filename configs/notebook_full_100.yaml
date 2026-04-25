@@ -2,10 +2,9 @@ inputs:
   sky_alm: inputs/sky/notebook_demo_alms.npz
   beams_dir: inputs/beams
   rimo_file: inputs/RIMOs/RIMO_HFI_npipe5v16_symmetrized.fits
-  pointing:
-    input_root: inputs/pointings/processed_od_
-    mission_length: full
-    use_flag: true
+  mission_length: full
+  pointings: inputs/pointings/pointing_
+  flags: inputs/flags/flags_
 detector_selection:
   channel: null
   detectors:

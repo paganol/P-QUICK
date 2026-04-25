@@ -181,15 +181,15 @@ def filter_pointing_files_by_mission_length(files: list[Path], mission_length: s
     return out
 
 
-def build_pointing_file_paths(input_root: str, od_start: int, od_end: int) -> list[Path]:
+def build_pointing_file_paths(pointings_prefix: str, od_start: int, od_end: int) -> list[Path]:
     """Build the list of pointing NPZ paths for an OD range.
 
-    Constructs paths of the form ``{input_root}{od:04d}.npz`` for each OD in
-    ``[od_start, od_end]`` (inclusive), returning only paths that exist on disk.
+    Constructs paths of the form ``{pointings_prefix}od_{od:04d}.npz`` for each
+    OD in ``[od_start, od_end]`` (inclusive), returning only paths that exist.
 
     Args:
-        input_root: Path prefix shared by all pointing files, e.g.
-            ``"inputs/pointings/processed_od_"``.
+        pointings_prefix: Prefix for pointing files, e.g.
+            ``"inputs/pointings/pointing_"``.
         od_start: First operational day (inclusive).
         od_end: Last operational day (inclusive).
 
@@ -199,11 +199,11 @@ def build_pointing_file_paths(input_root: str, od_start: int, od_end: int) -> li
     Raises:
         FileNotFoundError: If no files exist for the requested range.
     """
-    candidates = [Path(f"{input_root}{od:04d}.npz") for od in range(od_start, od_end + 1)]
+    candidates = [Path(f"{pointings_prefix}od_{od:04d}.npz") for od in range(od_start, od_end + 1)]
     existing = [p for p in candidates if p.exists()]
     if not existing:
         raise FileNotFoundError(
-            f"No pointing files found for input_root={input_root!r}, OD{od_start}-OD{od_end}"
+            f"No pointing files found for pointings={pointings_prefix!r}, OD{od_start}-OD{od_end}"
         )
     return existing
 

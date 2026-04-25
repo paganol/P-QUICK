@@ -11,9 +11,9 @@ inputs:
   sky_alm: inputs/sky/alms_cmb0000.fits
   beams_dir: inputs/beams
   rimo_file: inputs/RIMOs/RIMO_HFI_npipe5v16_symmetrized.fits
-  pointing:
-    input_root: inputs/pointings/processed_od_
-    mission_length: 91-99
+  mission_length: 91-99
+  pointings: inputs/pointings/pointing_
+  flags: inputs/flags/flags_
 
 detector_selection:
   channel: 100ghz

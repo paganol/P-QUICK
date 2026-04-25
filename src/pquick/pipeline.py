@@ -14,6 +14,7 @@ from .io import (
     detector_to_beam_file,
     infer_lmax_from_alm,
     load_beam_alm,
+    load_horn_flag_npz,
     load_pointing_npz,
     load_rimo_detectors,
     load_sky_alm,
@@ -24,6 +25,20 @@ from .mapmaking import accumulate_tqu_matrix, init_map_matrix, solve_tqu_from_ma
 from .pointing import build_pointing_interpolator
 from .quaternion import bore_det_to_angles, bore_det_to_ptg, normalize_quaternion, quat_mul
 from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution, resolve_nthreads
+
+
+def _det_to_horn(detector: str) -> str:
+    if detector and detector[-1] in "abMS":
+        return detector[:-1]
+    return detector
+
+
+def _detector_channel_ghz(detector: str) -> int | None:
+    try:
+        head = detector.split("-", 1)[0]
+        return int(head)
+    except Exception:
+        return None
 
 
 def _get_mpi():
@@ -109,9 +124,9 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             }
         )
 
-    mission = config.inputs.pointing.mission_length or "full"
+    mission = config.inputs.mission_length or "full"
     od_start, od_end = parse_mission_length(mission)
-    all_pointing = build_pointing_file_paths(config.inputs.pointing.input_root, od_start, od_end)
+    all_pointing = build_pointing_file_paths(config.inputs.pointings, od_start, od_end)
     local_pointing = _local_slice(all_pointing, rank, size)
 
     if verbose:
@@ -147,6 +162,35 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         del point_us
         t_resamp_od += _time.perf_counter() - _t0
 
+        detector_flags: dict[str, np.ndarray] = {}
+        use_flag_od = config.inputs.flags is not None
+        if use_flag_od:
+            od = extract_od_from_pointing_filename(npz_path)
+            channel_cache: dict[int, Path] = {}
+            for dinfo in det_info:
+                det_name = str(dinfo["name"])
+                ch = _detector_channel_ghz(det_name)
+                if ch is None:
+                    raise ValueError(f"Cannot infer channel from detector '{det_name}' for flags")
+                if ch not in channel_cache:
+                    flag_path = Path(f"{config.inputs.flags}{ch:03d}ghz_od_{od:04d}.npz")
+                    channel_cache[ch] = flag_path if flag_path.exists() else None  # type: ignore[assignment]
+
+                if channel_cache[ch] is None:
+                    _vprint(verbose, rank, f"  [flags] no flag file for ch={ch} OD {od:04d}, skipping flags")
+                    use_flag_od = False
+                    detector_flags.clear()
+                    break
+
+                horn = _det_to_horn(det_name)
+                hflag = load_horn_flag_npz(channel_cache[ch], horn, n_samples=interp.n_native)
+                if hflag.size != interp.n_native:
+                    raise ValueError(
+                        f"Flag length mismatch for {det_name} at OD {od:04d}: "
+                        f"{hflag.size} != {interp.n_native}"
+                    )
+                detector_flags[det_name] = hflag
+
         chunk_samples = max(1, (interp.n_native + n_chunks_cfg - 1) // n_chunks_cfg)
         n_chunks = (interp.n_native + chunk_samples - 1) // chunk_samples
         # Pre-allocate reusable buffers for the pointing array and psi (mapmaking).
@@ -159,24 +203,26 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         for chunk_idx, chunk_start in enumerate(range(0, interp.n_native, chunk_samples), start=1):
             chunk_end = min(chunk_start + chunk_samples, interp.n_native)
             chunk_len = chunk_end - chunk_start
-            flag_chunk = interp.flag_native[chunk_start:chunk_end]
-            good = (flag_chunk == 0) if config.inputs.pointing.use_flag else np.ones(chunk_len, dtype=bool)
-            ngood = int(np.count_nonzero(good))
-            _vprint(
-                verbose,
-                rank,
-                f"  [chunk {chunk_idx}/{n_chunks}] samples {chunk_start}:{chunk_end}"
-                f" | good={ngood}/{chunk_len} | n_native={interp.n_native}",
-            )
-            if not np.any(good):
-                continue
-
             # Interpolate boresight once per chunk; skip the [good] boolean-index copy
             # when all samples are unflagged (avoids an unnecessary (chunk_len, 4) copy).
             _t0 = _time.perf_counter()
             q_bore_all = interp.get_boresight_quaternions(chunk_start, chunk_len)
-            q_bore_good = q_bore_all if ngood == chunk_len else q_bore_all[good]
             t_resamp_od += _time.perf_counter() - _t0
+
+            # Compute good-sample mask for the first detector (common to all detectors
+            # when flags are absent; printed before entering the detector loop).
+            if use_flag_od:
+                _first_flag = detector_flags[str(det_info[0]["name"])][chunk_start:chunk_end]
+                _common_bad = interp.flag_native[chunk_start:chunk_end] != 0
+                _good_first = ~(_common_bad | (_first_flag != 0))
+            else:
+                _good_first = np.ones(chunk_len, dtype=bool)
+            _vprint(
+                verbose,
+                rank,
+                f"  [chunk {chunk_idx}/{n_chunks}] samples {chunk_start}:{chunk_end}"
+                f" | good={int(np.count_nonzero(_good_first))}/{chunk_len} | n_native={interp.n_native}",
+            )
 
             for det_idx, dinfo in enumerate(det_info, start=1):
                 det_quat = np.asarray(dinfo["quat"], dtype=np.float64)
@@ -189,6 +235,20 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                     rank,
                     f"    [DET {det_idx}/{len(det_info)}] {det_name}",
                 )
+
+                if use_flag_od:
+                    det_flag_chunk = detector_flags[det_name][chunk_start:chunk_end]
+                    # Keep compatibility with any legacy per-pointing bad samples.
+                    common_bad = interp.flag_native[chunk_start:chunk_end] != 0
+                    good = ~(common_bad | (det_flag_chunk != 0))
+                else:
+                    good = np.ones(chunk_len, dtype=bool)
+
+                ngood = int(np.count_nonzero(good))
+                if ngood == 0:
+                    continue
+
+                q_bore_good = q_bore_all if ngood == chunk_len else q_bore_all[good]
 
                 # Fill pre-allocated buffers directly — no temporary arrays.
                 # ptg_buf[:, 0/1/2] = theta / phi / (psi - pi/2)  (ducc0 Ludwig-III offset)
@@ -217,7 +277,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 del pix, tod
                 t_macc_od += _time.perf_counter() - _t0
 
-            del q_bore_all, q_bore_good
+            del q_bore_all
 
         t_resamp_total += t_resamp_od
         t_conv_total += t_conv_od

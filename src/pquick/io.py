@@ -13,16 +13,17 @@ from .utilities import DETSETS
 
 
 def _required_npz_keys() -> tuple[str, ...]:
-    return ("time", "qx", "qy", "qz", "qs", "flag", "sampling_rate_hz")
+    return ("t0_ns", "qx", "qy", "qz", "qs", "sampling_rate_hz", "idx_first", "idx_last", "idx_step")
 
 
 def load_pointing_npz(path: str | Path) -> PointingData:
     """Load a compressed NPZ pointing file and return a :class:`~pquick.pointing.PointingData`.
 
-    Validates required keys, normalises the stacked quaternion array, and optionally
-    reads ``original_indices`` for non-uniform undersampling.
+    Validates required keys, normalises the stacked quaternion array, and reads
+    ``original_indices`` for undersampling reconstruction.
 
-    Expects a single native-rate ``flag`` field.
+    The ``flag`` field is optional. If absent, a zero-valued native-rate flag
+    array is synthesised from ``original_indices``.
 
     Args:
         path: Path to the ``.npz`` pointing file.
@@ -39,29 +40,59 @@ def load_pointing_npz(path: str | Path) -> PointingData:
         if missing:
             raise ValueError(f"{p} missing keys: {missing}")
 
-        time_us = np.asarray(data["time"], dtype=np.float64)
+        t0_ns = float(np.asarray(data["t0_ns"]).reshape(-1)[0])
         qx = np.asarray(data["qx"], dtype=np.float64)
         qy = np.asarray(data["qy"], dtype=np.float64)
         qz = np.asarray(data["qz"], dtype=np.float64)
         qs = np.asarray(data["qs"], dtype=np.float64)
-        flag = np.asarray(data["flag"], dtype=np.int8)
+        flag = np.asarray(data["flag"], dtype=np.int8) if "flag" in data else None
         sampling_rate_hz = float(np.asarray(data["sampling_rate_hz"]).reshape(-1)[0])
-        original_indices = (
-            np.asarray(data["original_indices"], dtype=np.int64)
-            if "original_indices" in data
-            else None
-        )
+        idx_first = int(np.asarray(data["idx_first"]).reshape(-1)[0])
+        idx_last = int(np.asarray(data["idx_last"]).reshape(-1)[0])
+        idx_step = int(np.asarray(data["idx_step"]).reshape(-1)[0])
 
-    if not (time_us.size == qx.size == qy.size == qz.size == qs.size):
+    # Reconstruct original_indices from the 3 compact scalars.
+    original_indices = np.arange(idx_first, idx_last, idx_step, dtype=np.int64)
+    if original_indices.size == 0 or original_indices[-1] != idx_last:
+        original_indices = np.append(original_indices, idx_last)
+
+    if not (qx.size == qy.size == qz.size == qs.size == original_indices.size):
         raise ValueError("undersampled quaternion arrays must have identical length")
+    if flag is None:
+        n_native = int(original_indices[-1]) + 1
+        flag = np.zeros(n_native, dtype=np.int8)
+
     quat_us = normalize_quaternion(np.stack([qx, qy, qz, qs], axis=-1))
     return PointingData(
-        time_us=time_us,
+        t0_ns=t0_ns,
         quat_us=quat_us,
         flag=flag,
         sampling_rate_hz=sampling_rate_hz,
         original_indices=original_indices,
     )
+
+
+def load_horn_flag_npz(path: str | Path, horn: str, n_samples: int | None = None) -> np.ndarray:
+    """Load and unpack a per-horn packed flag stream from ``flags_*.npz``.
+
+    Args:
+        path: Path to the channel flag NPZ file.
+        horn: Horn key, e.g. ``"100-1"``.
+        n_samples: Optional explicit output length. If omitted, uses the
+            ``n_samples`` metadata from the NPZ.
+
+    Returns:
+        Int8 array where 0=good, 1=bad.
+    """
+    p = Path(path)
+    with np.load(p, allow_pickle=False) as data:
+        if horn not in data:
+            available = [k for k in data.files if "-" in k]
+            raise KeyError(f"Horn '{horn}' not found in {p}. Available: {available}")
+        packed = np.asarray(data[horn], dtype=np.uint8)
+        n = int(n_samples) if n_samples is not None else int(np.asarray(data["n_samples"]).reshape(-1)[0])
+    unpacked = np.unpackbits(packed, bitorder="little")[:n]
+    return unpacked.astype(np.int8)
 
 
 def load_sky_alm(path: str | Path) -> np.ndarray:

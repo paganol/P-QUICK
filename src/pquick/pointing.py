@@ -12,19 +12,18 @@ class PointingData:
     """Undersampled (coarse) pointing data loaded from an NPZ file.
 
     Attributes:
-        time_us: Timestamps in nanoseconds at the coarse sampling rate.
+        t0_ns: Start timestamp of the coarse time grid in nanoseconds.
         quat_us: Unit quaternions ``(x, y, z, w)`` at the coarse rate, shape ``(N, 4)``.
         flag: Quality flags at the **native** (full-rate) sampling rate.
         sampling_rate_hz: Native (full-rate) detector sampling frequency in Hz.
-        original_indices: Optional mapping from coarse samples to native-rate indices,
-            enabling non-uniform undersampling.
+        original_indices: Mapping from coarse samples to native-rate indices.
     """
 
-    time_us: np.ndarray
+    t0_ns: float
     quat_us: np.ndarray
     flag: np.ndarray
     sampling_rate_hz: float
-    original_indices: np.ndarray | None = None
+    original_indices: np.ndarray
 
 
 @dataclass
@@ -206,60 +205,42 @@ def _normalize_original_indices(original_indices: np.ndarray | None, n_us: int) 
 
 
 def reconstruct_native_time(
-    time_us: np.ndarray,
+    t0_ns: float,
     sampling_rate_hz: float,
-    original_indices: np.ndarray | None = None,
+    original_indices: np.ndarray,
 ) -> np.ndarray:
-    """Reconstruct a uniformly spaced native-rate time grid from undersampled timestamps.
-
-    When *original_indices* is provided, the grid spans from the first undersampled
-    timestamp to the native index of the last sample; otherwise the span is inferred
-    from the median time step.
+    """Reconstruct a uniformly spaced native-rate time grid.
 
     Args:
-        time_us: Coarse timestamps in nanoseconds, strictly increasing.
+        t0_ns: Start timestamp of the coarse grid in nanoseconds.
         sampling_rate_hz: Native detector sampling rate in Hz.
-        original_indices: Optional mapping from coarse to native sample indices.
+        original_indices: Mapping from coarse to native sample indices.
 
     Returns:
         1-D float64 array of native-rate timestamps in nanoseconds.
 
     Raises:
-        ValueError: If inputs are inconsistent or non-monotone.
+        ValueError: If inputs are inconsistent.
     """
     if sampling_rate_hz <= 0:
         raise ValueError("sampling_rate_hz must be positive")
-    time_us = np.asarray(time_us, dtype=np.float64)
-    if time_us.ndim != 1 or time_us.size < 2:
-        raise ValueError("time_us must be a 1D array with at least 2 samples")
-    if np.any(np.diff(time_us) <= 0):
-        raise ValueError("time_us must be strictly increasing")
-
+    norm_idx = _normalize_original_indices(original_indices, np.asarray(original_indices).size)
+    n_samp = int(norm_idx[-1]) + 1
     dt_ns = 1e9 / sampling_rate_hz
-    norm_idx = _normalize_original_indices(original_indices, time_us.size)
-    if norm_idx is not None:
-        n_samp = int(norm_idx[-1]) + 1
-    else:
-        n_samp = int(np.floor((time_us[-1] - time_us[0]) / dt_ns + 0.5)) + 1
-    return time_us[0] + dt_ns * np.arange(n_samp, dtype=np.float64)
+    return float(t0_ns) + dt_ns * np.arange(n_samp, dtype=np.float64)
 
 
 def _estimate_coarse_rate_hz(
-    time_us: np.ndarray,
     native_rate_hz: float,
-    original_indices: np.ndarray | None = None,
+    original_indices: np.ndarray,
 ) -> float:
-    norm_idx = _normalize_original_indices(original_indices, np.asarray(time_us).size)
-    if norm_idx is not None and norm_idx.size > 1:
-        step = float(np.median(np.diff(norm_idx)))
-        if step <= 0:
-            raise ValueError("Invalid original_indices step for coarse-rate estimate")
-        return float(native_rate_hz / step)
-
-    dt_ns = np.diff(np.asarray(time_us, dtype=np.float64))
-    if np.any(dt_ns <= 0):
-        raise ValueError("undersampled time grid must be strictly increasing")
-    return float(1e9 / np.median(dt_ns))
+    norm_idx = _normalize_original_indices(original_indices, np.asarray(original_indices).size)
+    if norm_idx.size < 2:
+        raise ValueError("original_indices must have at least 2 entries to estimate coarse rate")
+    step = float(np.median(np.diff(norm_idx)))
+    if step <= 0:
+        raise ValueError("Invalid original_indices step for coarse-rate estimate")
+    return float(native_rate_hz / step)
 
 
 def reconstruct_native_pointing(
@@ -283,8 +264,8 @@ def reconstruct_native_pointing(
     except Exception as exc:  # pragma: no cover
         raise ImportError("ducc0 is required for pointing interpolation") from exc
 
-    time_native = reconstruct_native_time(pointing.time_us, pointing.sampling_rate_hz, pointing.original_indices)
-    coarse_rate_hz = _estimate_coarse_rate_hz(pointing.time_us, pointing.sampling_rate_hz, pointing.original_indices)
+    time_native = reconstruct_native_time(pointing.t0_ns, pointing.sampling_rate_hz, pointing.original_indices)
+    coarse_rate_hz = _estimate_coarse_rate_hz(pointing.sampling_rate_hz, pointing.original_indices)
 
     pp = PointingProvider(0.0, coarse_rate_hz, pointing.quat_us)
     quat_native = np.asarray(
@@ -328,8 +309,8 @@ def build_pointing_interpolator(
     except Exception as exc:  # pragma: no cover
         raise ImportError("ducc0 is required for pointing interpolation") from exc
 
-    time_native = reconstruct_native_time(pointing.time_us, pointing.sampling_rate_hz, pointing.original_indices)
-    coarse_rate_hz = _estimate_coarse_rate_hz(pointing.time_us, pointing.sampling_rate_hz, pointing.original_indices)
+    time_native = reconstruct_native_time(pointing.t0_ns, pointing.sampling_rate_hz, pointing.original_indices)
+    coarse_rate_hz = _estimate_coarse_rate_hz(pointing.sampling_rate_hz, pointing.original_indices)
 
     # Flags are already at native rate.
     flag_native = np.asarray(pointing.flag, dtype=np.int8)
@@ -337,7 +318,7 @@ def build_pointing_interpolator(
     pp = PointingProvider(0.0, coarse_rate_hz, pointing.quat_us)
     return PointingInterpolator(
         provider=pp,
-        coarse_t0_ns=float(pointing.time_us[0]),
+        coarse_t0_ns=float(pointing.t0_ns),
         native_rate_hz=float(pointing.sampling_rate_hz),
         n_native=int(flag_native.size),
         flag_native=flag_native,

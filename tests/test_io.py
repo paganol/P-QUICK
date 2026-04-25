@@ -32,37 +32,39 @@ def test_load_pointing_npz_accepts_single_flag_schema(tmp_path: Path):
     f = tmp_path / "pointing_single_flag.npz"
     np.savez_compressed(
         f,
-        time=np.array([0.0, 1.0, 2.0], dtype=np.float64),
+        t0_ns=np.array([0.0], dtype=np.float64),
         qx=np.array([0.0, 0.0, 0.0], dtype=np.float64),
         qy=np.array([0.0, 0.0, 0.0], dtype=np.float64),
         qz=np.array([0.0, 0.0, 0.0], dtype=np.float64),
         qs=np.array([1.0, 1.0, 1.0], dtype=np.float64),
         flag=np.array([0, 1, 0], dtype=np.int8),
         sampling_rate_hz=np.array([10.0], dtype=np.float64),
+        idx_first=np.array([0], dtype=np.int64),
+        idx_last=np.array([2], dtype=np.int64),
+        idx_step=np.array([1], dtype=np.int64),
     )
 
     p = load_pointing_npz(f)
     np.testing.assert_array_equal(p.flag, np.array([0, 1, 0], dtype=np.int8))
 
 
-def test_load_pointing_npz_errors_without_flag_key(tmp_path: Path):
+def test_load_pointing_npz_defaults_to_zero_flag_without_flag_key(tmp_path: Path):
     f = tmp_path / "pointing_missing_flag_key.npz"
     np.savez_compressed(
         f,
-        time=np.array([0.0, 1.0, 2.0], dtype=np.float64),
+        t0_ns=np.array([0.0], dtype=np.float64),
         qx=np.array([0.0, 0.0, 0.0], dtype=np.float64),
         qy=np.array([0.0, 0.0, 0.0], dtype=np.float64),
         qz=np.array([0.0, 0.0, 0.0], dtype=np.float64),
         qs=np.array([1.0, 1.0, 1.0], dtype=np.float64),
         sampling_rate_hz=np.array([10.0], dtype=np.float64),
+        idx_first=np.array([0], dtype=np.int64),
+        idx_last=np.array([2], dtype=np.int64),
+        idx_step=np.array([1], dtype=np.int64),
     )
 
-    try:
-        load_pointing_npz(f)
-    except ValueError as exc:
-        assert "missing keys" in str(exc)
-    else:
-        raise AssertionError("Expected ValueError when 'flag' key is missing")
+    p = load_pointing_npz(f)
+    np.testing.assert_array_equal(p.flag, np.array([0, 0, 0], dtype=np.int8))
 
 
 def test_select_detectors_rejects_channel_and_detectors_together():
