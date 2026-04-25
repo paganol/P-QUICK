@@ -102,8 +102,12 @@ def solve_tqu_from_matrix(
         A[:, 2, 0] = A[:, 0, 2]
         A[:, 2, 1] = A[:, 1, 2]
 
-        # Vectorised condition check; reject ill-conditioned pixels.
-        cond = np.linalg.cond(A)
+        # Condition check via eigvalsh (symmetric matrices): faster than SVD-based cond.
+        eigs = np.linalg.eigvalsh(A)  # (batch, 3), ascending order
+        min_eig = eigs[:, 0]
+        max_eig = eigs[:, -1]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            cond = np.where(min_eig > 0, max_eig / min_eig, np.inf)
         good = cond < cond_threshold
         if not np.any(good):
             continue

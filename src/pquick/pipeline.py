@@ -289,10 +289,12 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             f"  od_total={t_resamp_od + t_conv_od + t_macc_od:.2f}s",
         )
 
+    _vprint(verbose, rank, f"OD loop done. Reducing matrices across {size} rank(s) …")
     matrix_all = _sum_reduce(comm, matrix_acc)
     del matrix_acc
     hits_all = _sum_reduce(comm, hits_acc)
     del hits_acc
+    _vprint(verbose, rank, "Reduce done. Solving T/Q/U …")
 
     _t0 = _time.perf_counter()
     t_map, q_map, u_map = solve_tqu_from_matrix(matrix_all)
