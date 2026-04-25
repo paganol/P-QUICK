@@ -174,7 +174,10 @@ def _rimo_detector_quat(
     """Build the ZYZ-convention detector quaternion for the Dxx beam frame.
 
     The Dxx (beam) frame requires the full rotation angle ``psi_uv + psi_pol``.
-    See qp_planck utilities.load_RIMO for the reference convention.
+    Following toast-npipe utilities.load_RIMO, the ZYZ quaternion is left-multiplied
+    by SPINROT = rotation(Y, pi/2 - 85deg) to account for the 85° Planck spin angle:
+    in the pointing-file frame (X=spin axis, Z≈LOS), the nominal boresight sits at
+    5° from Z, so SPINROT corrects the reference direction for all detectors.
     """
     degree = np.pi / 180.0
     phi = phi_uv_deg * degree
@@ -187,7 +190,20 @@ def _rimo_detector_quat(
     quat[0] = -np.sin(0.5 * theta) * np.sin(0.5 * (phi - psi))
     quat[1] = np.sin(0.5 * theta) * np.cos(0.5 * (phi - psi))
     quat[2] = np.cos(0.5 * theta) * np.sin(0.5 * (phi + psi))
-    return normalize_quaternion(quat)
+
+    # SPINROT = rotation(Y, pi/2 - 85deg = 5deg):  q = (0, sin(2.5deg), 0, cos(2.5deg))
+    _spin_half = 0.5 * (np.pi / 2.0 - np.radians(85.0))  # = 2.5 deg in radians
+    sy = np.sin(_spin_half)
+    cy = np.cos(_spin_half)
+    # SPINROT ⊗ quat  (left-multiply), convention (x,y,z,w)
+    qx, qy, qz, qw = quat[0], quat[1], quat[2], quat[3]
+    out = np.array([
+         cy * qx + sy * qz,
+         cy * qy + sy * qw,  # w1*y2 - x1*z2 + y1*w2 + z1*x2 with x1=z1=0
+         cy * qz - sy * qx,
+         cy * qw - sy * qy,
+    ])
+    return normalize_quaternion(out)
 
 
 def load_rimo_detectors(rimo_path: str | Path) -> dict[str, dict[str, np.ndarray | float]]:
