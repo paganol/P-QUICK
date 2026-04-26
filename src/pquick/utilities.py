@@ -250,39 +250,57 @@ def print_mpi_distribution(
             print(f"  rank {r:>{width}} : {h} | {od_info}", flush=True)
 
 
-def estimate_memory_per_rank_mb(nside: int) -> float:
-    """Estimate the peak memory per MPI rank in MB for a given nside.
+def estimate_memory_per_rank_mb(nside: int, lmax: int = 0, mmax: int = 0) -> float:
+    """Estimate the peak memory per MPI rank in MB.
 
-    The dominant terms are the full-sky normal-equation matrix (npix, 3, 3) float64,
-    the hit-pixel index array, and the three output maps.  The batched solve in
-    :func:`~pquick.mapmaking.solve_tqu_from_matrix` keeps the per-batch copy small so
-    it is not included in the estimate.
+    Accounts for the full-sky normal-equation matrix, hit map, output maps, and —
+    when *lmax* > 0 — one ``ducc0.totalconvolve.Interpolator`` instance (the dominant
+    term at high *lmax* / *mmax*).
+
+    The Interpolator estimate is a lower bound assuming complex64 (float32) internal
+    storage and no NUFFT oversampling: ``(lmax+1) × 2(lmax+1) × (2*mmax+1) × 8 B``.
+    The actual size can be 1.5–2× larger depending on the epsilon target.
 
     Args:
         nside: HEALPix resolution parameter.
+        lmax: Maximum multipole (0 → Interpolator term omitted).
+        mmax: Maximum beam azimuthal order (beam kmax).
 
     Returns:
         Estimated peak memory in MB.
     """
     npix = 12 * nside * nside
     matrix_mb = npix * 9 * 8 / 1024**2   # (npix, 3, 3) float64
-    hits_mb   = npix * 8 / 1024**2        # (npix,) int64 (hit index worst case)
+    hits_mb   = npix * 8 / 1024**2        # (npix,) int64
     maps_mb   = npix * 3 * 8 / 1024**2   # t, q, u output maps
-    return matrix_mb + hits_mb + maps_mb
+    interp_mb = 0.0
+    if lmax > 0:
+        # One ducc0 Interpolator: internal grid (lmax+1) × 2*(lmax+1) × (2*mmax+1)
+        # stored as complex64 (8 B) — conservative lower bound, no oversampling.
+        interp_mb = (lmax + 1) * 2 * (lmax + 1) * (2 * mmax + 1) * 8 / 1024**2
+    return matrix_mb + hits_mb + maps_mb + interp_mb
 
 
-def suggest_tasks_per_node(nside: int, node_memory_mb: float, cores_per_node: int) -> int:
+def suggest_tasks_per_node(
+    nside: int,
+    node_memory_mb: float,
+    cores_per_node: int,
+    lmax: int = 0,
+    mmax: int = 0,
+) -> int:
     """Suggest the maximum number of MPI tasks per node for a given nside.
 
     Args:
         nside: HEALPix resolution parameter.
         node_memory_mb: Total physical memory on one compute node in MB.
         cores_per_node: Number of cores (and therefore maximum tasks) per node.
+        lmax: Maximum multipole (passed to :func:`estimate_memory_per_rank_mb`).
+        mmax: Maximum beam azimuthal order (passed to :func:`estimate_memory_per_rank_mb`).
 
     Returns:
         Recommended number of MPI tasks per node (capped at ``cores_per_node``).
     """
-    mem_per_rank = estimate_memory_per_rank_mb(nside)
+    mem_per_rank = estimate_memory_per_rank_mb(nside, lmax=lmax, mmax=mmax)
     max_tasks = int(node_memory_mb / mem_per_rank)
     return min(max_tasks, cores_per_node)
 

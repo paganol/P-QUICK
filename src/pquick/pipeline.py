@@ -147,13 +147,27 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     if verbose:
         local_ods = [extract_od_from_pointing_filename(p) for p in local_pointing]
         print_mpi_distribution(comm, rank, size, local_ods)
-        est_mb = estimate_memory_per_rank_mb(config.map.nside)
+        map_mb = estimate_memory_per_rank_mb(config.map.nside)
+        interp_mb = estimate_memory_per_rank_mb(
+            config.map.nside, lmax=config.convolution.lmax, mmax=config.convolution.mmax
+        ) - map_mb
+        alm_mb = (
+            sky_alm.nbytes + sum(d["beam_alm"].nbytes for d in det_info)
+        ) / 1024**2
+        n_chunks = max(1, int(config.convolution.chunks))
+        # ptg_buf (chunk_samples, 3) + psi_buf (chunk_samples,) + tod (≤chunk_samples,)
+        tl_bytes_per_sample = (3 + 1 + 1) * 8
+        est_mb = map_mb + interp_mb + alm_mb
         _vprint(
             verbose,
             rank,
             f"[Memory] Estimated peak per rank: {est_mb / 1024:.2f} GB"
-            f" (nside={config.map.nside}, npix={npix:,})"
-            f" | for {size} ranks: {size * est_mb / 1024:.1f} GB total",
+            f" (for {size} ranks: {size * est_mb / 1024:.1f} GB total)\n"
+            f"         nside={config.map.nside}  npix={npix:,}  lmax={config.convolution.lmax}  mmax={config.convolution.mmax}\n"
+            f"           maps/matrix : {map_mb / 1024:.2f} GB\n"
+            f"           Interpolator: {interp_mb / 1024:.2f} GB  [lower bound, actual can be 1.5–2×]\n"
+            f"           ALMs        : {alm_mb:.0f} MB\n"
+            f"           timeline    : ~{tl_bytes_per_sample} B/sample × chunk_samples × {n_chunks} chunk(s)",
         )
 
     _vprint(verbose, rank, f"Starting pipeline: {len(local_pointing)} ODs on rank {rank}/{size}")
