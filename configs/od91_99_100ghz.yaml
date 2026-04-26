@@ -5,6 +5,7 @@ inputs:
   mission_length: 91-99
   pointings: inputs/pointings/pointing_
   flags: inputs/flags/flags_
+  bad_rings_file: inputs/hfi_bad_intervals.txt
 
 detector_selection:
   channel: 100ghz

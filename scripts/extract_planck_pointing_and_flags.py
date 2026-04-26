@@ -19,6 +19,10 @@ Flag recipe (NPIPE defaults):
    common_bad       = (ptg_obt_flag & 0x01) | (ptg_att_flag & 0x02) | (ch_obt_flag & 0x01)
    horn_bad         = OR over arms: (det_flag & 0x01)
    final_flag[horn] = (common_bad | horn_bad) != 0
+
+Bit masks are configurable from CLI (``--obt-mask``, ``--att-mask``,
+``--det-mask``) to propagate additional flag classes (e.g. planet masks)
+when needed.
 """
 
 from __future__ import annotations
@@ -41,6 +45,17 @@ UNDERSAMPLE_FACTOR = 1000
 OBT_MASK = np.uint8(0x01)
 ATT_MASK = np.uint8(0x02)
 DET_MASK = np.uint8(0x01)
+
+
+def _parse_mask(mask: str | int) -> np.uint8:
+    """Parse bitmask values passed as decimal or hex strings (e.g. ``0x03``)."""
+    if isinstance(mask, int):
+        value = mask
+    else:
+        value = int(str(mask), 0)
+    if value < 0 or value > 0xFF:
+        raise ValueError(f"Mask must be in [0, 255], got {mask!r}")
+    return np.uint8(value)
 
 # ---------------------------------------------------------------------------
 # Horn groupings: ordered list of (horn_name, [det, ...])
@@ -140,6 +155,8 @@ def extract_pointing(
     od_str: str,
     output_dir: Path,
     undersample: int,
+    obt_mask: np.uint8,
+    att_mask: np.uint8,
 ) -> tuple[Path, np.ndarray]:
     """
     Undersample boresight quaternions, save pointing NPZ.
@@ -162,7 +179,7 @@ def extract_pointing(
     if indices[-1] != n - 1:
         indices = np.append(indices, n - 1)
 
-    common_flag = (obt_flag & OBT_MASK) | (att_flag & ATT_MASK)
+    common_flag = (obt_flag & obt_mask) | (att_flag & att_mask)
 
     out_path = output_dir / f"pointing_od_{od_str}.npz"
     np.savez_compressed(
@@ -190,6 +207,8 @@ def extract_channel_flags_packed(
     freq: int,
     common_flag: np.ndarray,
     output_dir: Path,
+    obt_mask: np.uint8,
+    det_mask: np.uint8,
 ) -> Path:
     """
     Build per-horn packed-bit bad flags for one channel and save as NPZ.
@@ -205,7 +224,7 @@ def extract_channel_flags_packed(
         if n_samples == 0:
             raise ValueError(f"No channel samples in {channel_fits}")
 
-        ch_common = (common_flag[:n_samples] | (ch_obt_flag[:n_samples] & OBT_MASK)).astype(np.uint8)
+        ch_common = (common_flag[:n_samples] | (ch_obt_flag[:n_samples] & obt_mask)).astype(np.uint8)
 
         for horn, dets in horn_defs:
             horn_bad = np.zeros(n_samples, dtype=np.uint8)
@@ -223,7 +242,7 @@ def extract_channel_flags_packed(
                     pad[: det_flag.size] = det_flag
                     det_flag = pad
 
-                horn_bad |= (det_flag[:n_samples] & DET_MASK)
+                horn_bad |= (det_flag[:n_samples] & det_mask)
 
             bad = (ch_common | horn_bad) != 0
             payload[horn] = np.packbits(bad, bitorder="little")
@@ -272,6 +291,9 @@ def process_od(
     output_dir: Path,
     undersample: int,
     overwrite: bool,
+    obt_mask: np.uint8,
+    att_mask: np.uint8,
+    det_mask: np.uint8,
 ) -> None:
     pointing_fits = _find_pointing_fits(miss03_dir, od_str)
     if pointing_fits is None:
@@ -284,10 +306,17 @@ def process_od(
         with fits.open(pointing_fits) as hdul:
             obt_flag = np.asarray(hdul[1].data["FLAG"], dtype=np.uint8)
             att_flag = np.asarray(hdul[3].data["FLAG"], dtype=np.uint8)
-        common_flag = (obt_flag & OBT_MASK) | (att_flag & ATT_MASK)
+        common_flag = (obt_flag & obt_mask) | (att_flag & att_mask)
     else:
         print(f"OD {od_str}: extracting pointing ...", end=" ", flush=True)
-        ptg_out, common_flag = extract_pointing(pointing_fits, od_str, output_dir, undersample)
+        ptg_out, common_flag = extract_pointing(
+            pointing_fits,
+            od_str,
+            output_dir,
+            undersample,
+            obt_mask,
+            att_mask,
+        )
         print(f"ok [{ptg_out.name}]")
 
     for freq in channels:
@@ -306,7 +335,15 @@ def process_od(
             continue
 
         print(f"  {freq} GHz: packed-bit flags from {ch_fits.name} ...", end=" ", flush=True)
-        result = extract_channel_flags_packed(ch_fits, od_str, freq, common_flag, output_dir)
+        result = extract_channel_flags_packed(
+            ch_fits,
+            od_str,
+            freq,
+            common_flag,
+            output_dir,
+            obt_mask,
+            det_mask,
+        )
         print(f"ok [{result.name}]")
 
 
@@ -324,7 +361,14 @@ def main() -> None:
     parser.add_argument("--undersample", type=int, default=UNDERSAMPLE_FACTOR)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--inspect", action="store_true")
+    parser.add_argument("--obt-mask", default="0x01", help="Bitmask for OBT FLAG (default: 0x01)")
+    parser.add_argument("--att-mask", default="0x02", help="Bitmask for ATT FLAG (default: 0x02)")
+    parser.add_argument("--det-mask", default="0x01", help="Bitmask for detector FLAG (default: 0x01)")
     args = parser.parse_args()
+
+    obt_mask = _parse_mask(args.obt_mask)
+    att_mask = _parse_mask(args.att_mask)
+    det_mask = _parse_mask(args.det_mask)
 
     miss03_dir = Path(args.miss03_dir)
     reprocd_dir = Path(args.reprocd_dir)
@@ -349,6 +393,7 @@ def main() -> None:
     print(f"Processing ODs {args.od_range[0]}-{args.od_range[1]}")
     print(f"Channels: {args.channels}")
     print(f"Output:   {output_dir}")
+    print(f"Masks:    obt={int(obt_mask):#04x} att={int(att_mask):#04x} det={int(det_mask):#04x}")
     print("-" * 60)
 
     for od_str in ods:
@@ -361,6 +406,9 @@ def main() -> None:
                 output_dir=output_dir,
                 undersample=args.undersample,
                 overwrite=args.overwrite,
+                obt_mask=obt_mask,
+                att_mask=att_mask,
+                det_mask=det_mask,
             )
         except Exception as exc:
             print(f"OD {od_str}: [ERROR] {exc}")

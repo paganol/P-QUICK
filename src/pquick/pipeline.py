@@ -29,6 +29,62 @@ from .quaternion import bore_det_to_angles, bore_det_to_ptg, normalize_quaternio
 from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution, resolve_nthreads
 
 
+def _load_bad_ring_intervals(path: str | Path) -> dict[str, list[tuple[float, float]]]:
+    """Load a TOAST/NPIPE-style bad-ring interval file.
+
+    The file format is plain text with rows:
+        ``<det_or_ALL> <tstart_s> <tstop_s>``
+    and optional comment lines starting with ``#``.
+    """
+    intervals: dict[str, list[tuple[float, float]]] = {}
+    p = Path(path)
+    with p.open("r", encoding="utf-8") as f:
+        for iline, line in enumerate(f, start=1):
+            row = line.strip()
+            if not row or row.startswith("#"):
+                continue
+            parts = row.split()
+            if len(parts) != 3:
+                raise ValueError(f"Invalid bad_rings_file row {iline} in {p}: {row!r}")
+            det_key = parts[0].upper()
+            tstart = float(parts[1])
+            tstop = float(parts[2])
+            if tstop < tstart:
+                tstart, tstop = tstop, tstart
+            intervals.setdefault(det_key, []).append((tstart, tstop))
+    return intervals
+
+
+def _chunk_bad_ring_mask(
+    intervals: dict[str, list[tuple[float, float]]] | None,
+    det_name: str,
+    coarse_t0_ns: float,
+    native_rate_hz: float,
+    chunk_start: int,
+    chunk_len: int,
+) -> np.ndarray:
+    """Return a boolean mask of bad samples for one chunk and detector."""
+    if not intervals:
+        return np.zeros(chunk_len, dtype=bool)
+
+    det_key = det_name.upper()
+    det_intervals = intervals.get(det_key, []) + intervals.get("ALL", [])
+    if not det_intervals:
+        return np.zeros(chunk_len, dtype=bool)
+
+    dt_s = 1.0 / float(native_rate_hz)
+    t0_s = float(coarse_t0_ns) * 1.0e-9 + float(chunk_start) * dt_s
+    times = t0_s + dt_s * np.arange(chunk_len, dtype=np.float64)
+
+    out = np.zeros(chunk_len, dtype=bool)
+    t_first = float(times[0])
+    t_last = float(times[-1])
+    for tstart, tstop in det_intervals:
+        if tstart <= t_last and tstop >= t_first:
+            out |= (times >= tstart) & (times <= tstop)
+    return out
+
+
 def _det_to_horn(detector: str) -> str:
     if detector and detector[-1] in "abMS":
         return detector[:-1]
@@ -129,6 +185,15 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     mission = config.inputs.mission_length or "full"
     od_start, od_end = parse_mission_length(mission)
     all_pointing = build_pointing_file_paths(config.inputs.pointings, od_start, od_end)
+
+    bad_ring_intervals: dict[str, list[tuple[float, float]]] | None = None
+    if config.inputs.bad_rings_file is not None:
+        bad_ring_intervals = _load_bad_ring_intervals(config.inputs.bad_rings_file)
+        _vprint(
+            verbose,
+            rank,
+            f"[Flags] Loaded bad ring intervals from {config.inputs.bad_rings_file}",
+        )
 
     # Validate all pointing files exist before doing any work.
     missing_pointing = [p for p in all_pointing if not p.exists()]
@@ -244,14 +309,26 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             q_bore_all = interp.get_boresight_quaternions(chunk_start, chunk_len)
             t_resamp_od += _time.perf_counter() - _t0
 
-            # Compute good-sample mask for the first detector (common to all detectors
-            # when flags are absent; printed before entering the detector loop).
-            if use_flag_od:
-                _first_flag = detector_flags[str(det_info[0]["name"])][chunk_start:chunk_end]
-                _common_bad = interp.flag_native[chunk_start:chunk_end] != 0
-                _good_first = ~(_common_bad | (_first_flag != 0))
+            # Compute ring_bad for the first detector once — reused in the first
+            # detector-loop iteration to avoid a redundant call.
+            _first_det_name = str(det_info[0]["name"])
+            if bad_ring_intervals is not None:
+                _ring_bad_first = _chunk_bad_ring_mask(
+                    bad_ring_intervals,
+                    _first_det_name,
+                    interp.coarse_t0_ns,
+                    interp.native_rate_hz,
+                    chunk_start,
+                    chunk_len,
+                )
             else:
-                _good_first = np.ones(chunk_len, dtype=bool)
+                _ring_bad_first = np.zeros(chunk_len, dtype=bool)
+            if use_flag_od:
+                _first_flag = detector_flags[_first_det_name][chunk_start:chunk_end]
+                _common_bad = interp.flag_native[chunk_start:chunk_end] != 0
+                _good_first = ~(_common_bad | (_first_flag != 0) | _ring_bad_first)
+            else:
+                _good_first = ~_ring_bad_first
             _vprint(
                 verbose,
                 rank,
@@ -271,13 +348,25 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                     f"    [DET {det_idx}/{len(det_info)}] {det_name}",
                 )
 
+                if det_name == _first_det_name:
+                    ring_bad = _ring_bad_first
+                elif bad_ring_intervals is not None:
+                    ring_bad = _chunk_bad_ring_mask(
+                        bad_ring_intervals,
+                        det_name,
+                        interp.coarse_t0_ns,
+                        interp.native_rate_hz,
+                        chunk_start,
+                        chunk_len,
+                    )
+                else:
+                    ring_bad = _ring_bad_first  # all-zeros, safe to share (never mutated)
                 if use_flag_od:
                     det_flag_chunk = detector_flags[det_name][chunk_start:chunk_end]
-                    # Keep compatibility with any legacy per-pointing bad samples.
                     common_bad = interp.flag_native[chunk_start:chunk_end] != 0
-                    good = ~(common_bad | (det_flag_chunk != 0))
+                    good = ~(common_bad | (det_flag_chunk != 0) | ring_bad)
                 else:
-                    good = np.ones(chunk_len, dtype=bool)
+                    good = ~ring_bad
 
                 ngood = int(np.count_nonzero(good))
                 if ngood == 0:

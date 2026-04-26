@@ -41,6 +41,9 @@ class InputsConfig:
             ``inputs/flags/flags_100ghz_od_0091.npz``.
             When ``None`` (default) or when the per-OD file is absent, flags
             are not applied and all samples are treated as good.
+        bad_rings_file: Optional path to a TOAST/NPIPE-style bad-ring interval
+            text file with rows ``<det_or_ALL> <tstart_s> <tstop_s>``.
+            Intervals are applied on top of existing flags.
     """
 
     sky_alm: str
@@ -49,6 +52,7 @@ class InputsConfig:
     mission_length: str | None = None
     pointings: str = "inputs/pointings/pointing_"
     flags: str | None = None
+    bad_rings_file: str | None = None
 
 
 @dataclass
@@ -130,6 +134,11 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
             mission_length=(str(data["inputs"].get("mission_length")) if data["inputs"].get("mission_length") is not None else None),
             pointings=str(data["inputs"].get("pointings", "inputs/pointings/pointing_")),
             flags=(str(data["inputs"]["flags"]) if data["inputs"].get("flags") is not None else None),
+            bad_rings_file=(
+                str(data["inputs"]["bad_rings_file"])
+                if data["inputs"].get("bad_rings_file") is not None
+                else None
+            ),
         ),
         detector_selection=DetectorSelection(
             channel=channel,
