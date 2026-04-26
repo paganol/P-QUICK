@@ -1,20 +1,10 @@
 from __future__ import annotations
 
-import healpy as hp
 import numpy as np
+from ducc0.healpix import Healpix_Base
 
-
-def init_map_matrix(nside: int) -> np.ndarray:
-    """Allocate a zero-filled ``(npix, 3, 3)`` normal-equation matrix accumulator.
-
-    Args:
-        nside: HEALPix resolution parameter.
-
-    Returns:
-        Float64 array of shape ``(hp.nside2npix(nside), 3, 3)`` initialised to zero.
-    """
-    npix = hp.nside2npix(nside)
-    return np.zeros((npix, 3, 3), dtype=np.float64)
+# Standard HEALPix sentinel for unobserved pixels (same value used by healpy).
+_UNSEEN: float = -1.6375e30
 
 
 def accumulate_tqu_matrix(
@@ -30,7 +20,7 @@ def accumulate_tqu_matrix(
     lower-left column stores the weighted RHS ``A^T N^{-1} d``, all indexed by pixel.
 
     Args:
-        matrix: Accumulator array of shape ``(npix, 3, 3)`` from :func:`init_map_matrix`.
+        matrix: Accumulator array of shape ``(npix, 3, 3)``.
         pix: HEALPix pixel indices for each sample, shape ``(N,)``.
         psi: Polarisation angles in radians, shape ``(N,)``.
         tod: Convolved signal samples, shape ``(N,)``.
@@ -65,7 +55,7 @@ def solve_tqu_from_matrix(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Solve the per-pixel 3x3 polarised map-making equation to recover T, Q, U maps.
 
-    Pixels with no hits or a poorly conditioned normal matrix are set to ``hp.UNSEEN``.
+    Pixels with no hits or a poorly conditioned normal matrix are set to ``_UNSEEN``.
     Pixels are processed in batches of ``batch_size`` to keep the memory footprint small
     (avoids allocating a full-sky copy of the matrix during the solve step).
 
@@ -80,9 +70,9 @@ def solve_tqu_from_matrix(
         Tuple ``(t_map, q_map, u_map)`` of float64 HEALPix maps.
     """
     npix = matrix.shape[0]
-    t_map = np.full(npix, hp.UNSEEN, dtype=np.float64)
-    q_map = np.full(npix, hp.UNSEEN, dtype=np.float64)
-    u_map = np.full(npix, hp.UNSEEN, dtype=np.float64)
+    t_map = np.full(npix, _UNSEEN, dtype=np.float64)
+    q_map = np.full(npix, _UNSEEN, dtype=np.float64)
+    u_map = np.full(npix, _UNSEEN, dtype=np.float64)
 
     hit_idx = np.where(matrix[:, 0, 0] > 0)[0]
     if hit_idx.size == 0:
@@ -150,7 +140,9 @@ def accumulate_simple_iqu(
     Returns:
         Dict with keys ``i_num``, ``q_num``, ``u_num``, ``i_den``, ``hits``, ``wpol``.
     """
-    npix = hp.nside2npix(nside)
+    hpx = Healpix_Base(nside, "NEST" if nest else "RING")
+
+    npix = hpx.npix()
     i_num = np.zeros(npix, dtype=np.float64)
     q_num = np.zeros(npix, dtype=np.float64)
     u_num = np.zeros(npix, dtype=np.float64)
@@ -174,7 +166,9 @@ def accumulate_simple_iqu(
     ps = np.asarray(psi, dtype=np.float64)[good]
     y = np.asarray(tod, dtype=np.float64)[good]
 
-    pix = hp.ang2pix(nside, th, ph, nest=nest)
+    pix = hpx.ang2pix(
+        np.stack([th, ph], axis=-1)
+    )
     c2 = np.cos(2.0 * ps)
     s2 = np.sin(2.0 * ps)
     w = float(det_weight)

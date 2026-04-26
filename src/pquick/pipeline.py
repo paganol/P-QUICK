@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import time as _time
+import warnings
 from pathlib import Path
 from typing import cast
 
 import healpy as hp
 import numpy as np
+from ducc0.healpix import Healpix_Base
 
 from .config import PipelineConfig, load_config
 from .convolution import convolve_timeline
@@ -21,7 +23,7 @@ from .io import (
     select_detectors,
     truncate_alm,
 )
-from .mapmaking import accumulate_tqu_matrix, init_map_matrix, solve_tqu_from_matrix
+from .mapmaking import accumulate_tqu_matrix, solve_tqu_from_matrix
 from .pointing import build_pointing_interpolator
 from .quaternion import bore_det_to_angles, bore_det_to_ptg, normalize_quaternion, quat_mul
 from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution, resolve_nthreads
@@ -127,7 +129,20 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     mission = config.inputs.mission_length or "full"
     od_start, od_end = parse_mission_length(mission)
     all_pointing = build_pointing_file_paths(config.inputs.pointings, od_start, od_end)
+
+    # Validate all pointing files exist before doing any work.
+    missing_pointing = [p for p in all_pointing if not p.exists()]
+    if missing_pointing:
+        missing_list = "\n  ".join(str(p) for p in missing_pointing)
+        raise FileNotFoundError(
+            f"{len(missing_pointing)} pointing file(s) not found:\n  {missing_list}"
+        )
+
     local_pointing = _local_slice(all_pointing, rank, size)
+
+    # Build the HEALPix base object once, reused for every ang2pix call.
+    hpx = Healpix_Base(config.map.nside, "NEST" if config.map.nest else "RING")
+    npix = hpx.npix()
 
     if verbose:
         local_ods = [extract_od_from_pointing_filename(p) for p in local_pointing]
@@ -137,15 +152,16 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             verbose,
             rank,
             f"[Memory] Estimated peak per rank: {est_mb / 1024:.2f} GB"
-            f" (nside={config.map.nside}, npix={12 * config.map.nside**2:,})"
+            f" (nside={config.map.nside}, npix={npix:,})"
             f" | for {size} ranks: {size * est_mb / 1024:.1f} GB total",
         )
 
     _vprint(verbose, rank, f"Starting pipeline: {len(local_pointing)} ODs on rank {rank}/{size}")
 
-    matrix_acc = init_map_matrix(config.map.nside)
+    matrix_acc = np.zeros((npix, 3, 3), dtype=np.float64)
     hits_acc = np.zeros(matrix_acc.shape[0], dtype=np.int64)
     n_chunks_cfg = int(max(1, config.convolution.chunks))
+
 
     t_resamp_total = t_conv_total = t_macc_total = 0.0
 
@@ -177,7 +193,12 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                     channel_cache[ch] = flag_path if flag_path.exists() else None  # type: ignore[assignment]
 
                 if channel_cache[ch] is None:
-                    _vprint(verbose, rank, f"  [flags] no flag file for ch={ch} OD {od:04d}, skipping flags")
+                    warnings.warn(
+                        f"Flag file not found for ch={ch} GHz OD {od:04d}: "
+                        f"{config.inputs.flags}{ch:03d}ghz_od_{od:04d}.npz — skipping flags for this OD",
+                        UserWarning,
+                        stacklevel=2,
+                    )
                     use_flag_od = False
                     detector_flags.clear()
                     break
@@ -271,7 +292,10 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 t_conv_od += _time.perf_counter() - _t0
 
                 _t0 = _time.perf_counter()
-                pix = hp.ang2pix(config.map.nside, ptg_buf[:ngood, 0], ptg_buf[:ngood, 1], nest=config.map.nest)
+                pix = hpx.ang2pix(
+                    ptg_buf[:ngood, :2],
+                    nthreads=nthreads,
+                )
                 accumulate_tqu_matrix(matrix_acc, pix, psi_buf[:ngood], np.asarray(tod, dtype=np.float64), det_weight)
                 np.add.at(hits_acc, pix, 1)
                 del pix, tod
