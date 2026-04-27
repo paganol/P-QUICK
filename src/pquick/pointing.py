@@ -28,7 +28,14 @@ class PointingData:
 
 @dataclass
 class NativePointing:
-    """Full-rate reconstructed pointing: time grid, quaternions, and combined flags."""
+    """Full-rate reconstructed pointing arrays for one OD.
+
+    Attributes:
+        time_native: Native-rate sample times in seconds, shape ``(N,)``.
+        quat_native: Reconstructed boresight unit quaternions ``(x, y, z, w)``,
+            shape ``(N, 4)``.
+        flag_native: Combined quality flags aligned with ``time_native``, shape ``(N,)``.
+    """
 
     time_native: np.ndarray
     quat_native: np.ndarray

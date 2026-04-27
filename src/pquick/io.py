@@ -360,7 +360,12 @@ def detector_to_beam_file(beams_dir: str | Path, detector: str) -> Path:
     raise FileNotFoundError(f"No beam file found for detector '{detector}' in {bdir}")
 
 
-def load_beam_alm(path: str | Path, lmax: int | None = None, mmax: int | None = None) -> np.ndarray:
+def load_beam_alm(
+    path: str | Path,
+    lmax: int | None = None,
+    mmax: int | None = None,
+    kmax: int | None = None,
+) -> np.ndarray:
     """Read beam spherical-harmonic coefficients from a Planck-format FITS file.
 
     The FITS table must contain ``index``, ``real``, and ``imag`` columns where
@@ -372,6 +377,7 @@ def load_beam_alm(path: str | Path, lmax: int | None = None, mmax: int | None = 
         path: Path to the beam FITS file (``blm_*.fits``).
         lmax: Maximum ℓ to retain; defaults to the value found in the file.
         mmax: Maximum azimuthal order *m* to retain; defaults to the file value.
+        kmax: Backward-compatible alias for ``mmax``.
 
     Returns:
         Complex128 array of shape ``(1, nalm_beam)`` in healpy m-major order.
@@ -379,6 +385,11 @@ def load_beam_alm(path: str | Path, lmax: int | None = None, mmax: int | None = 
     Raises:
         ValueError: If the requested *lmax* or *mmax* exceeds what the file provides.
     """
+    if mmax is not None and kmax is not None and int(mmax) != int(kmax):
+        raise ValueError(f"Received conflicting beam truncation values: mmax={mmax} and kmax={kmax}")
+    if mmax is None and kmax is not None:
+        mmax = kmax
+
     p = Path(path)
     with fits.open(p) as hdul:
         if len(hdul) > 1 and getattr(hdul[1], "columns", None) is not None:
@@ -396,7 +407,7 @@ def load_beam_alm(path: str | Path, lmax: int | None = None, mmax: int | None = 
                 if use_lmax > src_lmax:
                     raise ValueError(f"Requested lmax={use_lmax} exceeds beam lmax={src_lmax} for {p}")
                 if use_mmax > src_mmax:
-                    raise ValueError(f"Requested mmax={use_mmax} exceeds beam mmax={src_mmax} for {p}")
+                    raise ValueError(f"Requested {'kmax' if kmax is not None else 'mmax'}={use_mmax} exceeds beam {'kmax' if kmax is not None else 'mmax'}={src_mmax} for {p}")
 
                 mask = (ell <= use_lmax) & (emm <= use_mmax)
                 packed = _pack_truncated_alm(coeff[mask], ell[mask], emm[mask], use_lmax, use_mmax)
@@ -408,3 +419,40 @@ def load_beam_alm(path: str | Path, lmax: int | None = None, mmax: int | None = 
     except Exception:
         alm = hp.read_alm(str(p), hdu=1)
     return _coerce_alm_shape(np.asarray(alm, dtype=np.complex128))
+
+
+def normalize_beam_alm(beam_alm: np.ndarray, mode: str = "unit_integral") -> np.ndarray:
+    """Normalize beam ALMs for the requested convolution convention.
+
+    Args:
+        beam_alm: Complex beam ALMs of shape ``(ncomp, nalm)``.
+        mode: Normalization mode. ``"unit_integral"`` divides all components by
+            ``sqrt(4 pi) b_00`` of the temperature beam so a constant sky remains
+            constant after convolution. ``"raw"`` returns the input unchanged.
+
+    Returns:
+        Complex128 beam ALMs with the requested normalization applied.
+
+    Raises:
+        ValueError: If *mode* is unsupported or if the beam monopole cannot be used
+            for unit-integral normalization.
+    """
+    beam = np.asarray(beam_alm, dtype=np.complex128)
+    normalized = mode.strip().lower()
+    if normalized == "raw":
+        return beam
+    if normalized != "unit_integral":
+        raise ValueError(
+            f"Unsupported beam_normalization={mode!r}; expected 'unit_integral' or 'raw'"
+        )
+    if beam.ndim != 2 or beam.shape[0] < 1 or beam.shape[1] < 1:
+        raise ValueError("beam_alm must have shape (ncomp, nalm) with at least one coefficient")
+
+    scale = np.sqrt(4.0 * np.pi) * beam[0, 0]
+    if abs(scale) == 0.0:
+        raise ValueError("Cannot apply unit-integral beam normalization: b_00 is zero")
+    if abs(np.imag(scale)) > 1e-12 * max(1.0, abs(np.real(scale))):
+        raise ValueError(
+            "Cannot apply unit-integral beam normalization: sqrt(4 pi) * b_00 is not real"
+        )
+    return beam / float(np.real(scale))

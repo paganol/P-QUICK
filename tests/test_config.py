@@ -79,3 +79,64 @@ output:
 
     cfg = load_config(cfg_path)
     assert cfg.resampling.center_pointing is True
+
+
+def test_load_config_reads_output_prefix_from_output_section(tmp_path: Path):
+    cfg_path = tmp_path / "output_prefix.yaml"
+    cfg_path.write_text(
+        """
+inputs:
+  sky_alm: inputs/sky/alms_cmb0000.fits
+  beams_dir: inputs/beams
+  rimo_file: inputs/RIMOs/RIMO_HFI_npipe5v16_symmetrized.fits
+
+detector_selection:
+  channel: null
+  detectors: []
+
+convolution:
+  lmax: 16
+  mmax: 6
+
+map:
+  nside: 512
+
+output:
+  output_dir: outputs
+  output_prefix: custom_prefix
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_config(cfg_path)
+    assert cfg.output.output_prefix == "custom_prefix"
+
+
+def test_load_config_defaults_beam_normalization_to_unit_integral(tmp_path: Path):
+    cfg_path = tmp_path / "beam_norm.yaml"
+    cfg_path.write_text(
+        """
+inputs:
+  sky_alm: inputs/sky/alms_cmb0000.fits
+  beams_dir: inputs/beams
+  rimo_file: inputs/RIMOs/RIMO_HFI_npipe5v16_symmetrized.fits
+
+detector_selection:
+  channel: null
+  detectors: []
+
+convolution:
+  lmax: 16
+  mmax: 6
+
+map:
+  nside: 512
+
+output:
+  output_dir: outputs
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_config(cfg_path)
+    assert cfg.convolution.beam_normalization == "unit_integral"

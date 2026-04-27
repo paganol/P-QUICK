@@ -81,28 +81,43 @@ class ConvolutionConfig:
         mmax: Maximum azimuthal order *m* of the beam (``kmax`` in ducc0 notation).
         epsilon: Interpolation accuracy target for the ducc0 gridder.
         chunks: Number of equal-length interpolation calls per OD (1 = whole OD at once).
+        beam_normalization: Beam scaling mode before convolution. ``"unit_integral"``
+            divides by ``sqrt(4 pi) b_00`` so a constant-sky input remains constant
+            after convolution. ``"raw"`` uses the beam coefficients exactly as stored
+            in the FITS file.
     """
 
     lmax: int
     mmax: int
     epsilon: float = 1e-5
     chunks: int = 1
+    beam_normalization: str = "unit_integral"
 
 
 @dataclass
 class MapConfig:
-    """HEALPix output map parameters: resolution, pixel ordering, and filename prefix."""
+    """HEALPix output map parameters.
+
+    Attributes:
+        nside: HEALPix resolution parameter of the output map.
+        nest: If ``True``, write maps in NESTED ordering instead of the default RING ordering.
+    """
 
     nside: int
     nest: bool = False
-    output_prefix: str = "pquick"
 
 
 @dataclass
 class OutputConfig:
-    """Specifies the directory where output FITS maps are written."""
+    """Output location for generated products.
+
+    Attributes:
+        output_dir: Directory where output FITS maps are written.
+        output_prefix: Filename stem used when constructing the output FITS map name.
+    """
 
     output_dir: str = "outputs"
+    output_prefix: str = "pquick"
 
 
 @dataclass
@@ -110,6 +125,13 @@ class PipelineConfig:
     """Top-level configuration object aggregating all sub-configs for a pipeline run.
 
     Attributes:
+        inputs: File paths and mission-selection options for the run.
+        detector_selection: Rules for choosing which detectors participate in the pipeline.
+        resampling: Native-rate pointing reconstruction options.
+        convolution: Harmonic convolution parameters passed to ``ducc0``.
+        map: HEALPix output map settings.
+        output: Destination directory for generated files.
+        verbose: If ``True``, emit more detailed progress logging while the pipeline runs.
         nthreads: Number of threads for ducc0 and numba.
             ``0`` = read ``OMP_NUM_THREADS`` from the environment (fallback 1).
     """
@@ -126,6 +148,8 @@ class PipelineConfig:
 
 def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
     detsel = data.get("detector_selection") or {}
+    map_cfg = data.get("map", {}) or {}
+    output_cfg = data.get("output", {}) or {}
     channel = detsel.get("channel")
     detectors = list(detsel.get("detectors") or [])
     if channel and detectors:
@@ -158,13 +182,16 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
             mmax=int(data["convolution"].get("mmax", data["convolution"].get("kmax"))),
             epsilon=float(data.get("convolution", {}).get("epsilon", 1e-5)),
             chunks=int(data.get("convolution", {}).get("chunks", 1)),
+            beam_normalization=str(data.get("convolution", {}).get("beam_normalization", "unit_integral")),
         ),
         map=MapConfig(
             nside=int(data["map"]["nside"]),
-            nest=bool(data.get("map", {}).get("nest", False)),
-            output_prefix=str(data.get("map", {}).get("output_prefix", "pquick")),
+            nest=bool(map_cfg.get("nest", False)),
         ),
-        output=OutputConfig(output_dir=str(data.get("output", {}).get("output_dir", "outputs"))),
+        output=OutputConfig(
+            output_dir=str(output_cfg.get("output_dir", "outputs")),
+            output_prefix=str(output_cfg.get("output_prefix", map_cfg.get("output_prefix", "pquick"))),
+        ),
         verbose=bool(data.get("verbose", False)),
         nthreads=int(data.get("nthreads", 0)),
     )

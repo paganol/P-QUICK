@@ -16,6 +16,7 @@ from .io import (
     detector_to_beam_file,
     infer_lmax_from_alm,
     load_beam_alm,
+    normalize_beam_alm,
     load_horn_flag_npz,
     load_pointing_npz,
     load_rimo_detectors,
@@ -168,6 +169,10 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             beam_file,
             lmax=config.convolution.lmax,
             mmax=config.convolution.mmax,
+        )
+        beam_alm = normalize_beam_alm(
+            beam_alm,
+            mode=config.convolution.beam_normalization,
         )
         dmeta = det_meta.get(det, {})
         dquat = normalize_quaternion(
@@ -465,7 +470,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     outdir = Path(config.output.output_dir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    prefix = config.map.output_prefix
+    prefix = config.output.output_prefix
     map_path = outdir / f"{prefix}_iqu.fits"
     hits_path = outdir / f"{prefix}_hits.fits"
     wpol_path = outdir / f"{prefix}_wpol.fits"
