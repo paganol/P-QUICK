@@ -208,6 +208,8 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     # Build the HEALPix base object once, reused for every ang2pix call.
     hpx = Healpix_Base(config.map.nside, "NEST" if config.map.nest else "RING")
     npix = hpx.npix()
+    center_pointing = bool(config.resampling.center_pointing)
+    hpx_center = hpx if center_pointing else None
 
     if verbose:
         local_ods = [extract_od_from_pointing_filename(p) for p in local_pointing]
@@ -234,6 +236,12 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             f"           ALMs       : {alm_mb:.0f} MB\n"
             f"           timeline   : ~{tl_bytes_per_sample} B/sample × chunk_samples × {n_chunks} chunk(s)",
         )
+        if center_pointing:
+            _vprint(
+                verbose,
+                rank,
+                f"[Resampling] point-centering enabled (nside={config.map.nside}, order={'NEST' if config.map.nest else 'RING'})",
+            )
 
     _vprint(verbose, rank, f"Starting pipeline: {len(local_pointing)} ODs on rank {rank}/{size}")
 
@@ -381,6 +389,16 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 bore_det_to_ptg(q_bore_good, det_quat, ptg_buf[:ngood], psi_buf[:ngood])
                 t_resamp_od += _time.perf_counter() - _t0
 
+                pix_center = None
+                if hpx_center is not None:
+                    # Snap (theta, phi) to HEALPix pixel centers to suppress
+                    # subpixel pointing variation before convolution.
+                    pix_center = hpx_center.ang2pix(
+                        ptg_buf[:ngood, :2],
+                        nthreads=nthreads,
+                    )
+                    ptg_buf[:ngood, :2] = hpx_center.pix2ang(pix_center)
+
                 _t0 = _time.perf_counter()
                 tod = convolve_timeline(
                     sky_alm=sky_alm,
@@ -395,10 +413,13 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 t_conv_od += _time.perf_counter() - _t0
 
                 _t0 = _time.perf_counter()
-                pix = hpx.ang2pix(
-                    ptg_buf[:ngood, :2],
-                    nthreads=nthreads,
-                )
+                if pix_center is not None:
+                    pix = np.asarray(pix_center, dtype=np.int64)
+                else:
+                    pix = hpx.ang2pix(
+                        ptg_buf[:ngood, :2],
+                        nthreads=nthreads,
+                    )
                 accumulate_tqu_matrix(matrix_acc, pix, psi_buf[:ngood], np.asarray(tod, dtype=np.float64), det_weight)
                 np.add.at(hits_acc, pix, 1)
                 del pix, tod

@@ -62,9 +62,14 @@ class ResamplingConfig:
     Attributes:
         coordinate_system: Output sky frame for reconstructed pointing. Supported
             values are ``"ecliptic"`` and ``"galactic"``.
+        center_pointing: If ``True``, snap each resampled detector direction to
+            the center of a HEALPix pixel before convolution. This suppresses
+            subpixel effects by enforcing one representative direction per pixel.
+            Pixel centers are always taken at ``map.nside``.
     """
 
     coordinate_system: str = "galactic"
+    center_pointing: bool = False
 
 
 @dataclass
@@ -146,6 +151,7 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
         ),
         resampling=ResamplingConfig(
             coordinate_system=str(data.get("resampling", {}).get("coordinate_system", "galactic")),
+            center_pointing=bool(data.get("resampling", {}).get("center_pointing", False)),
         ),
         convolution=ConvolutionConfig(
             lmax=int(data["convolution"]["lmax"]),

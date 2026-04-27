@@ -12,6 +12,7 @@ detector_selection:
 
 resampling:
   coordinate_system: galactic
+  center_pointing: false
 
 nthreads: 0
 
