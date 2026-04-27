@@ -229,10 +229,10 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             f"[Memory] Estimated peak per rank: {est_mb / 1024:.2f} GB"
             f" (for {size} ranks: {size * est_mb / 1024:.1f} GB total)\n"
             f"         nside={config.map.nside}  npix={npix:,}  lmax={config.convolution.lmax}  mmax={config.convolution.mmax}\n"
-            f"           maps/matrix : {map_mb / 1024:.2f} GB\n"
-            f"           Interpolator: {interp_mb / 1024:.2f} GB  [lower bound, actual can be 1.5–2×]\n"
-            f"           ALMs        : {alm_mb:.0f} MB\n"
-            f"           timeline    : ~{tl_bytes_per_sample} B/sample × chunk_samples × {n_chunks} chunk(s)",
+            f"           maps/matrix: {map_mb / 1024:.2f} GB\n"
+            f"           Convolver  : {interp_mb / 1024:.2f} GB  [lower bound, actual can be 1.5–2×]\n"
+            f"           ALMs       : {alm_mb:.0f} MB\n"
+            f"           timeline   : ~{tl_bytes_per_sample} B/sample × chunk_samples × {n_chunks} chunk(s)",
         )
 
     _vprint(verbose, rank, f"Starting pipeline: {len(local_pointing)} ODs on rank {rank}/{size}")
