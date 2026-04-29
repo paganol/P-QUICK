@@ -114,13 +114,26 @@ def _local_slice(items: list[Path], rank: int, size: int) -> list[Path]:
     return [x for i, x in enumerate(items) if i % size == rank]
 
 
-def _sum_reduce(comm, arr: np.ndarray) -> np.ndarray:
+def _sum_reduce(comm, arr: np.ndarray, rank: int = 0) -> np.ndarray | None:
+    """Sum-reduce *arr* across all MPI ranks; only rank 0 receives the result.
+
+    Using ``Reduce`` instead of ``Allreduce`` halves network traffic because the
+    aggregated matrix is *not* broadcast back to every rank — only rank 0 needs
+    it to solve and write the output maps.
+
+    Returns:
+        The reduced array on rank 0; ``None`` on all other ranks.
+    """
     if comm is None:
         return arr
     from mpi4py import MPI
 
-    comm.Allreduce(MPI.IN_PLACE, arr)
-    return arr
+    if rank == 0:
+        comm.Reduce(MPI.IN_PLACE, arr, op=MPI.SUM, root=0)
+        return arr
+    else:
+        comm.Reduce(arr, None, op=MPI.SUM, root=0)
+        return None
 
 
 def _vprint(enabled: bool, rank: int, msg: str) -> None:
@@ -443,12 +456,29 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         )
 
     _vprint(verbose, rank, f"OD loop done. Reducing matrices across {size} rank(s) …")
-    matrix_all = _sum_reduce(comm, matrix_acc)
+    _t0 = _time.perf_counter()
+    matrix_all = _sum_reduce(comm, matrix_acc, rank)
     del matrix_acc
-    hits_all = _sum_reduce(comm, hits_acc)
+    hits_all = _sum_reduce(comm, hits_acc, rank)
     del hits_acc
-    _vprint(verbose, rank, "Reduce done. Solving T/Q/U …")
+    t_reduce = _time.perf_counter() - _t0
+    _vprint(verbose, rank, f"Reduce done in {t_reduce:.2f}s. Solving T/Q/U …")
 
+    if rank != 0:
+        _vprint(
+            verbose,
+            rank,
+            f"[Timing summary]"
+            f"  resamp={t_resamp_total:.2f}s"
+            f"  conv={t_conv_total:.2f}s"
+            f"  macc={t_macc_total:.2f}s"
+            f"  reduce={t_reduce:.2f}s"
+            f"  total={t_resamp_total + t_conv_total + t_macc_total + t_reduce:.2f}s",
+        )
+        return None
+
+    assert matrix_all is not None
+    assert hits_all is not None
     _t0 = _time.perf_counter()
     t_map, q_map, u_map = solve_tqu_from_matrix(matrix_all)
     t_solve = _time.perf_counter() - _t0
@@ -459,13 +489,11 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         f"  resamp={t_resamp_total:.2f}s"
         f"  conv={t_conv_total:.2f}s"
         f"  macc={t_macc_total:.2f}s"
+        f"  reduce={t_reduce:.2f}s"
         f"  solve={t_solve:.2f}s"
-        f"  total={t_resamp_total + t_conv_total + t_macc_total + t_solve:.2f}s",
+        f"  total={t_resamp_total + t_conv_total + t_macc_total + t_reduce + t_solve:.2f}s",
     )
     nobs00 = matrix_all[:, 0, 0]
-
-    if rank != 0:
-        return None
 
     outdir = Path(config.output.output_dir)
     outdir.mkdir(parents=True, exist_ok=True)
