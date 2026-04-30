@@ -118,6 +118,18 @@ def _local_slice(items: list[Path], rank: int, size: int) -> list[Path]:
     return [x for i, x in enumerate(items) if i % size == rank]
 
 
+def _lpt_slice(items: list[Path], rank: int, size: int) -> list[Path]:
+    """Assign items to ranks using the LPT (Longest Processing Time) heuristic.
+
+    Items are sorted by file size in descending order before round-robin
+    partitioning.  This ensures that large ODs are spread across different ranks
+    rather than accumulating on the same one, minimising the load imbalance that
+    causes ranks to wait at the MPI barrier.
+    """
+    sorted_items = sorted(items, key=lambda p: p.stat().st_size, reverse=True)
+    return [x for i, x in enumerate(sorted_items) if i % size == rank]
+
+
 def _sum_reduce(comm, arr: np.ndarray, rank: int = 0) -> np.ndarray | None:
     """Sum-reduce *arr* across all MPI ranks; only rank 0 receives the result.
 
@@ -226,7 +238,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             f"{len(missing_pointing)} pointing file(s) not found:\n  {missing_list}"
         )
 
-    local_pointing = _local_slice(all_pointing, rank, size)
+    local_pointing = _lpt_slice(all_pointing, rank, size)
 
     # Build the HEALPix base object once, reused for every ang2pix call.
     hpx = Healpix_Base(config.map.nside, "NEST" if config.map.nest else "RING")
