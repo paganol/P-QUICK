@@ -13,6 +13,7 @@ from .utilities import DETSETS
 
 
 def _required_npz_keys() -> tuple[str, ...]:
+    """Return required NPZ keys for undersampled pointing input files."""
     return ("t0_ns", "qx", "qy", "qz", "qs", "sampling_rate_hz", "idx_first", "idx_last", "idx_step")
 
 
@@ -135,6 +136,7 @@ def load_sky_alm(path: str | Path) -> np.ndarray:
 
 
 def _coerce_alm_shape(arr: np.ndarray) -> np.ndarray:
+    """Coerce ALM input to a complex array with shape ``(ncomp, nalm)``."""
     out = np.asarray(arr)
     if out.ndim == 1:
         out = out[None, :]
@@ -173,24 +175,31 @@ def truncate_alm(alm: np.ndarray, lmax_src: int, lmax_dst: int) -> np.ndarray:
 
 
 def _nalm_mmajor(lmax: int, mmax: int) -> int:
+    """Return ``nalm`` for healpy m-major storage truncated at ``mmax``."""
     return (mmax + 1) * (lmax + 1) - (mmax * (mmax + 1)) // 2
 
 
 def _beam_index_to_lm(index: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Decode Planck sequential beam indices into ``(ell, m)`` arrays."""
+    # Planck sequential convention: index = ell*(ell+1) + m + 1, m in [-ell, +ell]
+    # Inverting: ell = floor(sqrt(index - 1)), m = index - ell*(ell+1) - 1
+    # (same formula used by qp_planck / get_blm_det)
     idx0 = np.asarray(index, dtype=np.int64) - 1
-    ell = np.floor((np.sqrt(4.0 * idx0 + 1.0) - 1.0) / 2.0).astype(np.int64)
+    ell = np.floor(np.sqrt(idx0.astype(np.float64))).astype(np.int64)
     emm = idx0 - ell * (ell + 1)
     return ell, emm
 
 
-def _pack_truncated_alm(coeff: np.ndarray, ell: np.ndarray, emm: np.ndarray, lmax: int, kmax: int) -> np.ndarray:
-    out = np.zeros(_nalm_mmajor(lmax, kmax), dtype=np.complex128)
+def _pack_truncated_alm(coeff: np.ndarray, ell: np.ndarray, emm: np.ndarray, lmax: int, mmax: int) -> np.ndarray:
+    """Pack selected ``(ell, m)`` coefficients into healpy m-major order."""
+    out = np.zeros(_nalm_mmajor(lmax, mmax), dtype=np.complex128)
     start = emm * (lmax + 1) - (emm * (emm - 1)) // 2
     out[start + (ell - emm)] = coeff
     return out
 
 
 def _to_text(value: object) -> str:
+    """Convert a FITS scalar value to stripped text."""
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="ignore").strip()
     return str(value).strip()
@@ -364,7 +373,6 @@ def load_beam_alm(
     path: str | Path,
     lmax: int | None = None,
     mmax: int | None = None,
-    kmax: int | None = None,
 ) -> np.ndarray:
     """Read beam spherical-harmonic coefficients from a Planck-format FITS file.
 
@@ -377,7 +385,6 @@ def load_beam_alm(
         path: Path to the beam FITS file (``blm_*.fits``).
         lmax: Maximum ℓ to retain; defaults to the value found in the file.
         mmax: Maximum azimuthal order *m* to retain; defaults to the file value.
-        kmax: Backward-compatible alias for ``mmax``.
 
     Returns:
         Complex128 array of shape ``(1, nalm_beam)`` in healpy m-major order.
@@ -385,10 +392,6 @@ def load_beam_alm(
     Raises:
         ValueError: If the requested *lmax* or *mmax* exceeds what the file provides.
     """
-    if mmax is not None and kmax is not None and int(mmax) != int(kmax):
-        raise ValueError(f"Received conflicting beam truncation values: mmax={mmax} and kmax={kmax}")
-    if mmax is None and kmax is not None:
-        mmax = kmax
 
     p = Path(path)
     with fits.open(p) as hdul:
@@ -407,9 +410,15 @@ def load_beam_alm(
                 if use_lmax > src_lmax:
                     raise ValueError(f"Requested lmax={use_lmax} exceeds beam lmax={src_lmax} for {p}")
                 if use_mmax > src_mmax:
-                    raise ValueError(f"Requested {'kmax' if kmax is not None else 'mmax'}={use_mmax} exceeds beam {'kmax' if kmax is not None else 'mmax'}={src_mmax} for {p}")
+                    raise ValueError(f"Requested mmax={use_mmax} exceeds beam mmax={src_mmax} for {p}")
 
-                mask = (ell <= use_lmax) & (emm <= use_mmax)
+                # Keep only non-negative m: Planck beam files store all m in [-ℓ, ℓ]
+                # using the sequential index ℓ(ℓ+1)+m, so negative-m entries are
+                # present but redundant (for real beams b_{ℓ,-m} = (-1)^m b_{ℓm}*).
+                # _pack_truncated_alm uses the healpy m-major layout which only holds
+                # m ≥ 0; passing negative m produces wrong (wrapped) numpy indices that
+                # silently corrupt the m=0 coefficients.
+                mask = (ell <= use_lmax) & (emm >= 0) & (emm <= use_mmax)
                 packed = _pack_truncated_alm(coeff[mask], ell[mask], emm[mask], use_lmax, use_mmax)
                 return packed[None, :]
 

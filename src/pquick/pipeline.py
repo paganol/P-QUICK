@@ -87,12 +87,14 @@ def _chunk_bad_ring_mask(
 
 
 def _det_to_horn(detector: str) -> str:
+    """Map detector arm names to horn names used in packed flag files."""
     if detector and detector[-1] in "abMS":
         return detector[:-1]
     return detector
 
 
 def _detector_channel_ghz(detector: str) -> int | None:
+    """Extract channel frequency in GHz from a detector string like ``100-1a``."""
     try:
         head = detector.split("-", 1)[0]
         return int(head)
@@ -101,6 +103,7 @@ def _detector_channel_ghz(detector: str) -> int | None:
 
 
 def _get_mpi():
+    """Return ``(comm, rank, size)`` when MPI is available, else serial defaults."""
     try:
         from mpi4py import MPI
 
@@ -111,6 +114,7 @@ def _get_mpi():
 
 
 def _local_slice(items: list[Path], rank: int, size: int) -> list[Path]:
+    """Return the subset of items assigned to a rank via round-robin partition."""
     return [x for i, x in enumerate(items) if i % size == rank]
 
 
@@ -137,6 +141,7 @@ def _sum_reduce(comm, arr: np.ndarray, rank: int = 0) -> np.ndarray | None:
 
 
 def _vprint(enabled: bool, rank: int, msg: str) -> None:
+    """Print a message only on rank 0 when verbose output is enabled."""
     if enabled and rank == 0:
         print(msg, flush=True)
 
@@ -146,8 +151,8 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
     Loads sky ALMs and beam ALMs, iterates over operational days and detectors,
     accumulates the polarised normal-equation matrix, solves for T/Q/U, and writes
-    FITS output maps.  MPI-aware: ODs are distributed across ranks and results
-    are reduced with ``Allreduce`` before writing.
+    FITS output maps. MPI-aware: ODs are distributed across ranks and the
+    accumulated arrays are reduced to rank 0 with ``Reduce`` before writing.
 
     Args:
         config: Fully populated :class:`~pquick.config.PipelineConfig`.
