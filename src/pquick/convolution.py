@@ -6,6 +6,7 @@ import numpy as np
 
 
 def _match_component_count(sky: np.ndarray, beam: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Align sky/beam component counts by promoting or slicing beam components."""
     if sky.shape[0] == beam.shape[0]:
         return sky, beam
 
@@ -71,6 +72,11 @@ def convolve_timeline(
     ptg = np.asarray(ptg_thetaphipsi, dtype=np.float64)
     if ptg.ndim != 2 or ptg.shape[1] != 3:
         raise ValueError("ptg_thetaphipsi must have shape (N, 3)")
+
+    if int(mmax) > int(lmax) - 4:
+        raise ValueError(
+            f"ducc0 requires mmax <= lmax - 4; got mmax={mmax}, lmax={lmax}"
+        )
 
     sky = np.asarray(sky_alm, dtype=np.complex128)
     beam = np.asarray(beam_alm, dtype=np.complex128)

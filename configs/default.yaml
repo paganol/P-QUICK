@@ -12,6 +12,7 @@ detector_selection:
 
 resampling:
   coordinate_system: galactic
+  center_pointing: false
 
 nthreads: 0
 
@@ -20,11 +21,12 @@ convolution:
   mmax: 16
   epsilon: 1.0e-5
   chunks: 1
+  beam_normalization: unit_integral
 
 map:
   nside: 512
   nest: false
-  output_prefix: pquick_demo
 
 output:
   output_dir: outputs
+  output_prefix: pquick_demo

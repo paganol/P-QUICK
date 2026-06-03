@@ -208,6 +208,26 @@ def build_pointing_file_paths(pointings_prefix: str, od_start: int, od_end: int)
     return existing
 
 
+def _format_od_ranges(ods: list[int]) -> str:
+    """Format a sorted list of OD numbers as compact ranges.
+
+    Consecutive ODs are collapsed with ``-``; gaps are separated by ``,``.
+    E.g. ``[91,92,93,95,98,99]`` → ``"91-93,95,98-99"``.
+    """
+    if not ods:
+        return ""
+    parts: list[str] = []
+    start = prev = ods[0]
+    for od in ods[1:]:
+        if od == prev + 1:
+            prev = od
+        else:
+            parts.append(str(start) if start == prev else f"{start}-{prev}")
+            start = prev = od
+    parts.append(str(start) if start == prev else f"{start}-{prev}")
+    return ",".join(parts)
+
+
 def print_mpi_distribution(
     comm,
     rank: int,
@@ -231,7 +251,8 @@ def print_mpi_distribution(
     if size == 1:
         msg = f"[MPI] Serial run on host {hostname}"
         if local_ods:
-            od_info = f"ODs {local_ods[0]}-{local_ods[-1]} ({len(local_ods)} ODs)"
+            ods_sorted = sorted(local_ods)
+            od_info = f"ODs {_format_od_ranges(ods_sorted)} ({len(ods_sorted)} ODs)"
             msg += f" | {od_info}"
         print(msg, flush=True)
         return
@@ -244,7 +265,8 @@ def print_mpi_distribution(
         for r, h in enumerate(hostnames):
             ods = all_ods[r] if all_ods is not None else None
             if ods:
-                od_info = f"ODs {ods[0]}-{ods[-1]} ({len(ods)} ODs)"
+                ods_sorted = sorted(ods)
+                od_info = f"ODs {_format_od_ranges(ods_sorted)} ({len(ods_sorted)} ODs)"
             else:
                 od_info = "no ODs assigned"
             print(f"  rank {r:>{width}} : {h} | {od_info}", flush=True)

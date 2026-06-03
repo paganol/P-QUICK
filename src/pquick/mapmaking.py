@@ -7,6 +7,19 @@ from ducc0.healpix import Healpix_Base
 _UNSEEN: float = -1.6375e30
 
 
+def init_map_matrix(nside: int) -> np.ndarray:
+    """Allocate a zero-filled ``(npix, 3, 3)`` normal-equation matrix accumulator.
+
+    Args:
+        nside: HEALPix resolution parameter.
+
+    Returns:
+        Float64 array of shape ``(npix, 3, 3)`` initialised to zero.
+    """
+    npix = Healpix_Base(nside, "RING").npix()
+    return np.zeros((npix, 3, 3), dtype=np.float64)
+
+
 def accumulate_tqu_matrix(
     matrix: np.ndarray,
     pix: np.ndarray,

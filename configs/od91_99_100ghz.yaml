@@ -21,13 +21,14 @@ convolution:
   mmax: 6
   epsilon: 1.0e-5
   chunks: 1
+  beam_normalization: unit_integral
 
 map:
   nside: 512
   nest: false
-  output_prefix: od91_99_100ghz_nside1024
 
 output:
   output_dir: outputs
+  output_prefix: od91_99_100ghz_nside1024
 
 verbose: true

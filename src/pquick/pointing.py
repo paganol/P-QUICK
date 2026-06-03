@@ -28,7 +28,14 @@ class PointingData:
 
 @dataclass
 class NativePointing:
-    """Full-rate reconstructed pointing: time grid, quaternions, and combined flags."""
+    """Full-rate reconstructed pointing arrays for one OD.
+
+    Attributes:
+        time_native: Native-rate sample times in seconds, shape ``(N,)``.
+        quat_native: Reconstructed boresight unit quaternions ``(x, y, z, w)``,
+            shape ``(N, 4)``.
+        flag_native: Combined quality flags aligned with ``time_native``, shape ``(N,)``.
+    """
 
     time_native: np.ndarray
     quat_native: np.ndarray
@@ -113,6 +120,7 @@ class PointingInterpolator:
 
 
 def _rotation_matrix_to_quaternion(rotation: np.ndarray) -> np.ndarray:
+    """Convert a 3x3 rotation matrix to a normalized ``(x, y, z, w)`` quaternion."""
     rotation = np.asarray(rotation, dtype=np.float64)
     if rotation.shape != (3, 3):
         raise ValueError("rotation must have shape (3, 3)")
@@ -170,6 +178,7 @@ def _rotation_matrix_to_quaternion(rotation: np.ndarray) -> np.ndarray:
 
 
 def _frame_rotation_quaternion(coordinate_system: str) -> np.ndarray:
+    """Return the fixed quaternion rotating native ecliptic pointing to the target frame."""
     frame = coordinate_system.strip().lower()
     if frame == "ecliptic":
         return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
@@ -194,6 +203,7 @@ def _frame_rotation_quaternion(coordinate_system: str) -> np.ndarray:
 
 
 def _normalize_original_indices(original_indices: np.ndarray | None, n_us: int) -> np.ndarray | None:
+    """Validate and rebase undersampled native indices to start at zero."""
     if original_indices is None:
         return None
     idx = np.asarray(original_indices, dtype=np.int64)
@@ -234,6 +244,7 @@ def _estimate_coarse_rate_hz(
     native_rate_hz: float,
     original_indices: np.ndarray,
 ) -> float:
+    """Estimate coarse pointing sample rate from native-rate index spacing."""
     norm_idx = _normalize_original_indices(original_indices, np.asarray(original_indices).size)
     if norm_idx.size < 2:
         raise ValueError("original_indices must have at least 2 entries to estimate coarse rate")

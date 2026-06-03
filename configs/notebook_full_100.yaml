@@ -14,6 +14,7 @@ detector_selection:
   - 100-2b
 resampling:
   coordinate_system: galactic
+  center_pointing: false
 nthreads: 0
 
 convolution:
@@ -21,9 +22,10 @@ convolution:
   mmax: 6
   epsilon: 1.0e-05
   chunks: 1
+  beam_normalization: unit_integral
 map:
   nside: 1024
   nest: false
-  output_prefix: full_100_demo_nside1024
 output:
   output_dir: outputs
+  output_prefix: full_100_demo_nside1024

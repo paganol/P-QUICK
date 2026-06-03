@@ -3,13 +3,13 @@ from pathlib import Path
 import numpy as np
 
 from pquick.config import DetectorSelection
-from pquick.io import load_beam_alm, load_pointing_npz
+from pquick.io import load_beam_alm, load_pointing_npz, normalize_beam_alm
 from pquick.io import select_detectors
 
 
 def test_load_planck_beam_table_with_crop():
     beam = Path("inputs/beams/blm_100-1a.fits")
-    alm = load_beam_alm(beam, lmax=16, kmax=6)
+    alm = load_beam_alm(beam, lmax=16, mmax=6)
 
     expected_size = (6 + 1) * (16 + 1) - (6 * 7) // 2
     assert alm.shape == (1, expected_size)
@@ -17,15 +17,33 @@ def test_load_planck_beam_table_with_crop():
     assert np.count_nonzero(np.abs(alm[0]) > 0) > 0
 
 
-def test_load_planck_beam_table_rejects_too_large_kmax():
+def test_load_planck_beam_table_rejects_too_large_mmax():
     beam = Path("inputs/beams/blm_100-1a.fits")
 
     try:
-        load_beam_alm(beam, lmax=16, kmax=200)
+        load_beam_alm(beam, lmax=16, mmax=200)
     except ValueError as exc:
-        assert "exceeds beam kmax" in str(exc)
+        assert "exceeds beam mmax" in str(exc)
     else:
-        raise AssertionError("Expected ValueError for oversized kmax")
+        raise AssertionError("Expected ValueError for oversized mmax")
+
+
+def test_normalize_beam_alm_unit_integral_sets_b00_to_standard_constant_sky_response():
+    beam = Path("inputs/beams/blm_100-1a.fits")
+    alm = load_beam_alm(beam, lmax=16, mmax=6)
+
+    norm = normalize_beam_alm(alm, mode="unit_integral")
+
+    assert np.isclose(norm[0, 0].real, 1.0 / np.sqrt(4.0 * np.pi), rtol=0.0, atol=1e-12)
+    assert np.isclose(norm[0, 0].imag, 0.0, rtol=0.0, atol=1e-15)
+
+
+def test_normalize_beam_alm_raw_leaves_coefficients_unchanged():
+    alm = np.array([[2.0 + 0.0j, 1.0 - 3.0j]], dtype=np.complex128)
+
+    out = normalize_beam_alm(alm, mode="raw")
+
+    np.testing.assert_array_equal(out, alm)
 
 
 def test_load_pointing_npz_accepts_single_flag_schema(tmp_path: Path):
