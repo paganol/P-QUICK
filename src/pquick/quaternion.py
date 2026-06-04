@@ -311,7 +311,7 @@ def _bore_det_to_ptg_jit(
         psi_out[i] = ps
 
 
-_PSI_CONV_OFFSET = -0.5 * math.pi
+_PSI_CONV_OFFSET = 0.0
 
 
 def bore_det_to_ptg(
@@ -330,7 +330,8 @@ def bore_det_to_ptg(
 
         ptg[:, 0] = theta          # colatitude [0, pi]
         ptg[:, 1] = phi            # longitude  [0, 2pi)
-        ptg[:, 2] = psi + offset   # psi with Ludwig-III / ducc0 offset (-pi/2)
+        ptg[:, 2] = psi + offset   # psi passed directly to ducc0 (no offset needed:
+                                   # kernel psi=0 and ducc0 psi=0 both mean beam X = e_theta)
         psi_out[:] = psi           # polarisation angle for map-making
 
     Args:
@@ -338,8 +339,8 @@ def bore_det_to_ptg(
         det_quat: Fixed detector offset quaternion, shape ``(4,)``.
         ptg: Pre-allocated output array, shape ``(N, 3)``, C-contiguous float64.
         psi_out: Pre-allocated output array, shape ``(N,)``, float64.
-        psi_offset: Scalar added to psi in column 2 of *ptg*.  Default is ``-pi/2``
-            (Ludwig III / ducc0 co-polar convention).
+        psi_offset: Scalar added to psi in column 2 of *ptg*.  Default is ``0.0``
+            (kernel and ducc0 share the same psi=0 reference: beam X-axis = e_theta).
     """
     q_bore = np.ascontiguousarray(q_bore, dtype=np.float64)
     det_quat = np.ascontiguousarray(det_quat, dtype=np.float64)
