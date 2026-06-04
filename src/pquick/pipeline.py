@@ -214,6 +214,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 "beam_alm": beam_alm,
                 "quat": dquat,
                 "weight": detector_map_weight(det),
+                "psi_pol_rad": float(dmeta.get("psi_pol_rad", 0.0)),
             }
         )
 
@@ -384,6 +385,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 beam_alm = np.asarray(dinfo["beam_alm"], dtype=np.complex128)
                 det_weight = cast(float, dinfo["weight"])
                 det_name = str(dinfo["name"])
+                psi_pol_rad = float(dinfo.get("psi_pol_rad", 0.0))
 
                 _vprint(
                     verbose,
@@ -418,10 +420,11 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 q_bore_good = q_bore_all if ngood == chunk_len else q_bore_all[good]
 
                 # Fill pre-allocated buffers directly — no temporary arrays.
-                # ptg_buf[:, 0/1/2] = theta / phi / (psi - pi/2)  (ducc0 Ludwig-III offset)
-                # psi_buf[:] = psi  (polarisation angle for mapmaking, without offset)
+                # ptg_buf[:, 0/1/2] = theta / phi / psi_Dxx  (beam geometric frame for ducc0)
+                # psi_buf[:] = psi_Pxx  (polarisation angle for mapmaking)
+                # psi_pol_rad shifts ptg[:,2] from Pxx → Dxx without affecting psi_buf.
                 _t0 = _time.perf_counter()
-                bore_det_to_ptg(q_bore_good, det_quat, ptg_buf[:ngood], psi_buf[:ngood])
+                bore_det_to_ptg(q_bore_good, det_quat, ptg_buf[:ngood], psi_buf[:ngood], psi_pol_rad)
                 t_resamp_od += _time.perf_counter() - _t0
 
                 pix_center = None

@@ -209,11 +209,16 @@ def _rimo_detector_quat(
     phi_uv_deg: float,
     theta_uv_deg: float,
     psi_uv_deg: float,
-    psi_pol_deg: float = 0.0,
 ) -> np.ndarray:
-    """Build the ZYZ-convention detector quaternion for the Dxx beam frame.
+    """Build the ZYZ-convention detector quaternion for the Pxx polarization frame.
 
-    The Dxx (beam) frame requires the full rotation angle ``psi_uv + psi_pol``.
+    Uses ``psi_uv`` only (without ``psi_pol``) so that the extracted psi angle is
+    the **polarization-frame (Pxx)** angle — the standard sky polarization angle
+    used for mapmaking I/Q/U weights.  To obtain the **beam-geometric (Dxx)** psi
+    needed for ducc0 total-convolution, add ``psi_pol_rad`` to the psi_offset
+    parameter of :func:`~pquick.quaternion.bore_det_to_ptg` (stored separately in
+    the detector metadata as ``"psi_pol_rad"``).
+
     Following toast-npipe utilities.load_RIMO, the ZYZ quaternion is left-multiplied
     by SPINROT = rotation(Y, pi/2 - 85deg) to account for the 85° Planck spin angle:
     in the pointing-file frame (X=spin axis, Z≈LOS), the nominal boresight sits at
@@ -222,8 +227,8 @@ def _rimo_detector_quat(
     degree = np.pi / 180.0
     phi = phi_uv_deg * degree
     theta = theta_uv_deg * degree
-    # psi_uv + psi_pol gives the Dxx orientation; subtract phi per ZYZ convention
-    psi = (psi_uv_deg + psi_pol_deg) * degree - phi
+    # psi_uv only (Pxx frame); subtract phi per ZYZ convention
+    psi = psi_uv_deg * degree - phi
 
     quat = np.zeros(4, dtype=np.float64)
     quat[3] = np.cos(0.5 * theta) * np.cos(0.5 * (phi + psi))
@@ -285,7 +290,8 @@ def load_rimo_detectors(rimo_path: str | Path) -> dict[str, dict[str, np.ndarray
                 rec["theta_uv"] = theta_uv
                 rec["psi_uv"] = psi_uv
                 rec["psi_pol"] = psi_pol
-                rec["quat"] = _rimo_detector_quat(phi_uv, theta_uv, psi_uv, psi_pol)
+                rec["psi_pol_rad"] = psi_pol * (np.pi / 180.0)
+                rec["quat"] = _rimo_detector_quat(phi_uv, theta_uv, psi_uv)
             out[det] = rec
     if not out:
         raise ValueError(f"No detectors loaded from RIMO file: {rimo_path}")
