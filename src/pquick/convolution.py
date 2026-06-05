@@ -11,8 +11,9 @@ def _match_component_count(sky: np.ndarray, beam: np.ndarray) -> tuple[np.ndarra
         return sky, beam
 
     if sky.shape[0] == 3 and beam.shape[0] == 1:
-        promoted = np.zeros((3, beam.shape[1]), dtype=np.complex128)
-        promoted[0] = beam[0]
+        # Planck Dxx blm files are scalar co-polar beams. For polarized timeline
+        # convolution we apply the same co-polar beam transfer to T, Q, and U.
+        promoted = np.repeat(beam, 3, axis=0)
         return sky, promoted
 
     if sky.shape[0] == 1 and beam.shape[0] == 3:

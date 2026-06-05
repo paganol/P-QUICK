@@ -420,10 +420,10 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 q_bore_good = q_bore_all if ngood == chunk_len else q_bore_all[good]
 
                 # Fill pre-allocated buffers directly — no temporary arrays.
-                # psi_buf[:] stays in Pxx (polarisation frame) for mapmaking.
-                # ptg_buf[:, 2] is shifted to Dxx for beam convolution.
-                # Compose shifts explicitly: base ducc offset (currently 0) + Pxx->Dxx.
-                psi_conv_offset = psi_pol_rad
+                # det_quat is Dxx (beam frame), so psi_buf is also Dxx.
+                # Keep Dxx for convolution (beams are Dxx), then convert to Pxx
+                # for mapmaking via psi_map = psi_dxx - psi_pol.
+                psi_conv_offset = 0.0
                 _t0 = _time.perf_counter()
                 bore_det_to_ptg(
                     q_bore_good,
@@ -465,7 +465,14 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                         ptg_buf[:ngood, :2],
                         nthreads=nthreads,
                     )
-                accumulate_tqu_matrix(matrix_acc, pix, psi_buf[:ngood], np.asarray(tod, dtype=np.float64), det_weight)
+                psi_map = psi_buf[:ngood] - psi_pol_rad
+                accumulate_tqu_matrix(
+                    matrix_acc,
+                    pix,
+                    psi_map,
+                    np.asarray(tod, dtype=np.float64),
+                    det_weight,
+                )
                 np.add.at(hits_acc, pix, 1)
                 del pix, tod
                 t_macc_od += _time.perf_counter() - _t0
