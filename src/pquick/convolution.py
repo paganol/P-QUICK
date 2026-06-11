@@ -11,9 +11,15 @@ def _match_component_count(sky: np.ndarray, beam: np.ndarray) -> tuple[np.ndarra
         return sky, beam
 
     if sky.shape[0] == 3 and beam.shape[0] == 1:
-        # Planck Dxx blm files are scalar co-polar beams. For polarized timeline
-        # convolution we apply the same co-polar beam transfer to T, Q, and U.
-        promoted = np.repeat(beam, 3, axis=0)
+        # Intensity-only fallback (polarized_beam=False): the scalar spin-0 beam
+        # goes in the temperature slot only. ducc0's other two beam components are
+        # the spin-2 polarised response, NOT (Q, U) — copying the scalar beam into
+        # them injects a spurious E->T leakage that oscillates the transfer
+        # function. For a proper polarised beam, build [T, E, B] upstream via
+        # io.build_polarized_beam_alm so beam.shape[0] == 3 and this branch is
+        # not taken.
+        promoted = np.zeros((3, beam.shape[1]), dtype=np.complex128)
+        promoted[0] = beam[0]
         return sky, promoted
 
     if sky.shape[0] == 1 and beam.shape[0] == 3:

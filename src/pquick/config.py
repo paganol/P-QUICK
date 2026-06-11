@@ -85,6 +85,10 @@ class ConvolutionConfig:
             divides by ``sqrt(4 pi) b_00`` so a constant-sky input remains constant
             after convolution. ``"raw"`` uses the beam coefficients exactly as stored
             in the FITS file.
+        polarized_beam: If ``True`` (default), synthesise a proper spin-2 polarised
+            beam ``[T, E, B]`` from the scalar co-polar Planck blm so the convolution
+            captures the detector polarisation response. If ``False``, use the
+            intensity beam only (``[b, 0, 0]``); Q/U recover ~0.
     """
 
     lmax: int
@@ -92,6 +96,7 @@ class ConvolutionConfig:
     epsilon: float = 1e-5
     chunks: int = 1
     beam_normalization: str = "unit_integral"
+    polarized_beam: bool = True
 
 
 @dataclass
@@ -183,6 +188,7 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
             epsilon=float(data.get("convolution", {}).get("epsilon", 1e-5)),
             chunks=int(data.get("convolution", {}).get("chunks", 1)),
             beam_normalization=str(data.get("convolution", {}).get("beam_normalization", "unit_integral")),
+            polarized_beam=bool(data.get("convolution", {}).get("polarized_beam", True)),
         ),
         map=MapConfig(
             nside=int(data["map"]["nside"]),

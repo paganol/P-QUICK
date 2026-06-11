@@ -178,7 +178,7 @@ def _bore_det_to_angles_jit(
         qx0 = q_bore[i, 0]; qy0 = q_bore[i, 1]
         qz0 = q_bore[i, 2]; qw0 = q_bore[i, 3]
 
-        qx = qw0 * dx + qx0 * dw + qy0 * dz - qz0 * dy
+        qx: Any = qw0 * dx + qx0 * dw + qy0 * dz - qz0 * dy
         qy = qw0 * dy - qx0 * dz + qy0 * dw + qz0 * dx
         qz = qw0 * dz + qx0 * dy - qy0 * dx + qz0 * dw
         qw = qw0 * dw - qx0 * dx - qy0 * dy - qz0 * dz

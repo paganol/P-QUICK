@@ -13,6 +13,7 @@ from ducc0.healpix import Healpix_Base
 from .config import PipelineConfig, load_config
 from .convolution import convolve_timeline
 from .io import (
+    build_polarized_beam_alm,
     detector_to_beam_file,
     infer_lmax_from_alm,
     load_beam_alm,
@@ -200,11 +201,20 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             lmax=config.convolution.lmax,
             mmax=config.convolution.mmax,
         )
+        dmeta = det_meta.get(det, {})
+        psi_pol_rad = float(dmeta.get("psi_pol_rad", 0.0))
+        if config.convolution.polarized_beam:
+            # Scalar Planck blm (Dxx) -> spin-2 polarised [T, E, B] beam in the Pxx frame.
+            beam_alm = build_polarized_beam_alm(
+                beam_alm,
+                psi_pol_rad=psi_pol_rad,
+                lmax=config.convolution.lmax,
+                mmax=config.convolution.mmax,
+            )
         beam_alm = normalize_beam_alm(
             beam_alm,
             mode=config.convolution.beam_normalization,
         )
-        dmeta = det_meta.get(det, {})
         dquat = normalize_quaternion(
             np.asarray(dmeta.get("quat", np.array([0.0, 0.0, 0.0, 1.0])), dtype=np.float64)
         )
@@ -214,7 +224,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 "beam_alm": beam_alm,
                 "quat": dquat,
                 "weight": detector_map_weight(det),
-                "psi_pol_rad": float(dmeta.get("psi_pol_rad", 0.0)),
+                "psi_pol_rad": psi_pol_rad,
             }
         )
 
@@ -420,10 +430,14 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 q_bore_good = q_bore_all if ngood == chunk_len else q_bore_all[good]
 
                 # Fill pre-allocated buffers directly — no temporary arrays.
-                # det_quat is Dxx (beam frame), so psi_buf is also Dxx.
-                # Keep Dxx for convolution (beams are Dxx), then convert to Pxx
-                # for mapmaking via psi_map = psi_dxx - psi_pol.
-                psi_conv_offset = 0.0
+                # det_quat is built from psi_uv only, so psi_buf is the Pxx
+                # (polarisation-frame) angle used directly for mapmaking.
+                # Convolution frame:
+                #   polarized_beam -> beam already rotated to Pxx, convolve at psi_pxx
+                #                     (offset 0)
+                #   intensity-only -> scalar beam is Dxx, convolve at psi_dxx
+                #                     (offset psi_pol)
+                psi_conv_offset = 0.0 if config.convolution.polarized_beam else psi_pol_rad
                 _t0 = _time.perf_counter()
                 bore_det_to_ptg(
                     q_bore_good,
@@ -465,14 +479,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                         ptg_buf[:ngood, :2],
                         nthreads=nthreads,
                     )
-                psi_map = psi_buf[:ngood] - psi_pol_rad
-                accumulate_tqu_matrix(
-                    matrix_acc,
-                    pix,
-                    psi_map,
-                    np.asarray(tod, dtype=np.float64),
-                    det_weight,
-                )
+                accumulate_tqu_matrix(matrix_acc, pix, psi_buf[:ngood], np.asarray(tod, dtype=np.float64), det_weight)
                 np.add.at(hits_acc, pix, 1)
                 del pix, tod
                 t_macc_od += _time.perf_counter() - _t0

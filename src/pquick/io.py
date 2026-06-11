@@ -211,14 +211,12 @@ def _rimo_detector_quat(
     psi_uv_deg: float,
     psi_pol_deg: float = 0.0,
 ) -> np.ndarray:
-    """Build the ZYZ-convention detector quaternion for the Dxx beam frame.
+    """Build the ZYZ-convention detector quaternion for the Pxx polarization frame.
 
-    This follows TOAST-NPIPE ``load_RIMO``: use ``psi_uv + psi_pol`` in the
-    ZYZ construction, then left-multiply by ``SPINROT``. The resulting quaternion
-    orientation is in the beam-geometric frame (Dxx), matching Planck ``blm_*``
-    beam files.
-
-    For mapmaking polarization angles (Pxx), convert as ``psi_pxx = psi_dxx - psi_pol``.
+    Uses ``psi_uv`` only (without ``psi_pol``) so that extracted psi is the
+    polarization-frame (Pxx) angle used for mapmaking I/Q/U weights.  The Dxx
+    beam-frame angle for convolution is obtained by adding ``psi_pol`` as a
+    separate offset in the timeline pointing construction.
 
     Following toast-npipe utilities.load_RIMO, the ZYZ quaternion is left-multiplied
     by SPINROT = rotation(Y, pi/2 - 85deg) to account for the 85° Planck spin angle:
@@ -228,8 +226,8 @@ def _rimo_detector_quat(
     degree = np.pi / 180.0
     phi = phi_uv_deg * degree
     theta = theta_uv_deg * degree
-    # Dxx frame: psi_uv + psi_pol, subtract phi per ZYZ convention
-    psi = (psi_uv_deg + psi_pol_deg) * degree - phi
+    # Pxx frame: psi_uv only, subtract phi per ZYZ convention
+    psi = psi_uv_deg * degree - phi
 
     quat = np.zeros(4, dtype=np.float64)
     quat[3] = np.cos(0.5 * theta) * np.cos(0.5 * (phi + psi))
@@ -243,7 +241,7 @@ def _rimo_detector_quat(
     cy = np.cos(_spin_half)
     # SPINROT ⊗ quat  (left-multiply), convention (x,y,z,w)
     qx, qy, qz, qw = quat[0], quat[1], quat[2], quat[3]
-    out = np.array([
+    out: np.ndarray[tuple[Any, ...], np.dtype[Unknown]] = np.array([
          cy * qx + sy * qz,
          cy * qy + sy * qw,  # w1*y2 - x1*z2 + y1*w2 + z1*x2 with x1=z1=0
          cy * qz - sy * qx,
@@ -435,6 +433,77 @@ def load_beam_alm(
     except Exception:
         alm = hp.read_alm(str(p), hdu=1)
     return _coerce_alm_shape(np.asarray(alm, dtype=np.complex128))
+
+
+def build_polarized_beam_alm(
+    beam_alm_scalar: np.ndarray,
+    psi_pol_rad: float,
+    lmax: int,
+    mmax: int,
+    nside: int | None = None,
+) -> np.ndarray:
+    """Build an ideal co-polar polarised beam ``[T, E, B]`` from a scalar Planck blm.
+
+    Planck ``blm_*`` files store only the **scalar (spin-0) intensity** beam, measured
+    on planets, in the **Dxx** (beam-geometric) frame.  ducc0 total-convolution needs a
+    3-component ``[T, E, B]`` beam where the E/B components are the **spin-2** polarised
+    response — *not* a copy of the spin-0 beam.  Copying the intensity alm into the E/B
+    slots (e.g. ``np.repeat``) injects a mis-normalised polarisation response that leaks
+    E into the T solve and produces an oscillating transfer function.
+
+    For an ideal polarisation-sensitive detector the polarised beam is the **same**
+    intensity pattern, but the detector's fixed focal-plane polarisation direction, when
+    expressed in the local ``(e_theta, e_phi)`` basis across the beam, rotates with the
+    azimuth ``phi`` — giving the spin-2 ``e^{±2i phi}`` structure.  Concretely the beam
+    Stokes map is ``(I, Q, U) = B (1, cos 2(psi_pol - phi), sin 2(psi_pol - phi))`` and
+    its ``map2alm(pol=True)`` yields ``[T, E, B]``.  The scalar beam is first rotated
+    Dxx → Pxx via ``b_lm -> b_lm e^{i m psi_pol}`` so the returned beam is in the **Pxx**
+    polarisation frame (pol axis = beam x-axis); it must therefore be convolved with the
+    pointing psi in the Pxx frame (``psi_offset = 0``).
+
+    Validated against ``litebird_sim.beam_synthesis`` analytic Gaussian beams: the E/B
+    profiles match to <0.3 % (flat in ℓ; the residual is litebird's constant
+    ``exp(2 sigma^2)`` approximation vs the exact spin-2 transform used here).
+
+    Args:
+        beam_alm_scalar: Scalar intensity beam, shape ``(1, nalm)`` or ``(nalm,)``,
+            healpy m-major order at ``(lmax, mmax)``, in the Dxx frame.
+        psi_pol_rad: Detector polarisation angle ``psi_pol`` (radians) relative to the
+            Dxx beam x-axis.
+        lmax: Maximum multipole of the beam alm.
+        mmax: Maximum azimuthal order to retain in the output beam.
+        nside: HEALPix resolution for the intermediate map; defaults to the smallest
+            power of two with ``2 * nside >= lmax``.
+
+    Returns:
+        Complex128 array of shape ``(3, nalm)`` holding ``[T, E, B]`` beam alm at
+        ``(lmax, mmax)``, in the Pxx frame.
+    """
+    bb = beam_alm_scalar[0] if np.ndim(beam_alm_scalar) == 2 else np.asarray(beam_alm_scalar)
+    bb = np.ascontiguousarray(bb, dtype=np.complex128)
+
+    if nside is None:
+        nside = 1
+        while 2 * nside < lmax:
+            nside *= 2
+
+    # Dxx -> Pxx frame rotation about the boresight: b_lm -> b_lm e^{i m psi_pol}
+    # (same sense as qp_planck's e^{i m (psi_uv+psi_pol)}; psi_uv is carried by the
+    # pointing quaternion, so only psi_pol remains here).
+    ell, emm = hp.Alm.getlm(lmax, np.arange(bb.size))
+    bb = bb * np.exp(1j * emm * float(psi_pol_rad))
+
+    # Synthesise the intensity beam map and build the ideal co-polar Stokes pattern.
+    # Pol axis = Pxx x-axis, so psi_pol drops out of chi here. The spin-2 (E/B)
+    # response is obtained by map2alm(pol=True); the T component is taken directly
+    # from the (rotated) input alm so it is preserved exactly, unaffected by the
+    # intermediate pixelisation.
+    beam_map = hp.alm2map(bb, nside, lmax=lmax, mmax=mmax)
+    phi = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))[1]
+    chi = -2.0 * phi
+    iqu = np.array([beam_map, beam_map * np.cos(chi), beam_map * np.sin(chi)])
+    _, e_alm, b_alm = hp.map2alm(iqu, lmax=lmax, mmax=mmax, pol=True, iter=3)
+    return np.ascontiguousarray(np.array([bb, e_alm, b_alm], dtype=np.complex128))
 
 
 def normalize_beam_alm(beam_alm: np.ndarray, mode: str = "unit_integral") -> np.ndarray:
