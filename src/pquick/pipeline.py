@@ -231,6 +231,11 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 "quat": dquat,
                 "weight": detector_map_weight(det),
                 "psi_pol_rad": psi_pol_rad,
+                "rho_pol": (
+                    float(dmeta.get("rho_pol", 1.0))
+                    if config.map.use_cross_pol
+                    else 1.0
+                ),
             }
         )
 
@@ -402,6 +407,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 det_weight = cast(float, dinfo["weight"])
                 det_name = str(dinfo["name"])
                 psi_pol_rad = cast(float, dinfo["psi_pol_rad"])
+                rho_pol = cast(float, dinfo["rho_pol"])
 
                 _vprint(
                     verbose,
@@ -489,7 +495,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                         ptg_buf[:ngood, :2],
                         nthreads=nthreads,
                     )
-                accumulate_tqu_matrix(matrix_acc, pix, psi_buf[:ngood], np.asarray(tod, dtype=np.float64), det_weight)
+                accumulate_tqu_matrix(matrix_acc, pix, psi_buf[:ngood], np.asarray(tod, dtype=np.float64), det_weight, rho=rho_pol)
                 np.add.at(hits_acc, pix, 1)
                 del pix, tod
                 t_macc_od += _time.perf_counter() - _t0

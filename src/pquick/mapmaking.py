@@ -26,11 +26,19 @@ def accumulate_tqu_matrix(
     psi: np.ndarray,
     tod: np.ndarray,
     det_weight: float,
+    rho: float = 1.0,
 ) -> None:
     """Accumulate a detector's TOD into the polarised normal-equation matrix in-place.
 
     The upper 2×2 block stores the weighted pointing matrix ``A^T N^{-1} A`` and the
     lower-left column stores the weighted RHS ``A^T N^{-1} d``, all indexed by pixel.
+
+    The detector response model is ``d = I + rho (Q cos2psi + U sin2psi)`` where
+    ``rho = (1 - eps)/(1 + eps)`` is the polarisation efficiency (cross-polar
+    leakage ``eps``); ``rho = 1`` is an ideal polarisation-sensitive detector.
+    This matches qp_planck's ``rhohit`` weighting (``Ideal`` = 1, ``IMO`` = RIMO
+    epsilon). Note ``rho`` does not affect the recovered ``I``/temperature (the
+    I-I element is ``rho``-independent), only Q/U.
 
     Args:
         matrix: Accumulator array of shape ``(npix, 3, 3)``.
@@ -38,27 +46,30 @@ def accumulate_tqu_matrix(
         psi: Polarisation angles in radians, shape ``(N,)``.
         tod: Convolved signal samples, shape ``(N,)``.
         det_weight: Inverse-noise weight for this detector.
+        rho: Polarisation efficiency ``(1 - eps)/(1 + eps)``. Default ``1.0`` (ideal).
     """
     if pix.size == 0:
         return
 
     w = float(det_weight)
-    c2 = np.cos(2.0 * psi)
-    s2 = np.sin(2.0 * psi)
+    r = float(rho)
+    # Polarised response columns carry rho; the intensity column does not.
+    ac2 = r * np.cos(2.0 * psi)
+    as2 = r * np.sin(2.0 * psi)
     wy = w * tod
 
-    # Upper triangle: normal matrix A^T N^-1 A
+    # Upper triangle: normal matrix A^T N^-1 A  with A = [1, rho*cos2psi, rho*sin2psi]
     np.add.at(matrix[:, 0, 0], pix, w)
-    np.add.at(matrix[:, 0, 1], pix, w * c2)
-    np.add.at(matrix[:, 0, 2], pix, w * s2)
-    np.add.at(matrix[:, 1, 1], pix, w * c2 * c2)
-    np.add.at(matrix[:, 1, 2], pix, w * c2 * s2)
-    np.add.at(matrix[:, 2, 2], pix, w * s2 * s2)
+    np.add.at(matrix[:, 0, 1], pix, w * ac2)
+    np.add.at(matrix[:, 0, 2], pix, w * as2)
+    np.add.at(matrix[:, 1, 1], pix, w * ac2 * ac2)
+    np.add.at(matrix[:, 1, 2], pix, w * ac2 * as2)
+    np.add.at(matrix[:, 2, 2], pix, w * as2 * as2)
 
     # Lower triangle: RHS A^T N^-1 d
     np.add.at(matrix[:, 1, 0], pix, wy)
-    np.add.at(matrix[:, 2, 0], pix, wy * c2)
-    np.add.at(matrix[:, 2, 1], pix, wy * s2)
+    np.add.at(matrix[:, 2, 0], pix, wy * ac2)
+    np.add.at(matrix[:, 2, 1], pix, wy * as2)
 
 
 def solve_tqu_from_matrix(

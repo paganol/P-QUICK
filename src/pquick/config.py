@@ -111,10 +111,15 @@ class MapConfig:
     Attributes:
         nside: HEALPix resolution parameter of the output map.
         nest: If ``True``, write maps in NESTED ordering instead of the default RING ordering.
+        use_cross_pol: If ``True`` (default), weight the map-making polarisation response
+            by the per-detector ``rho = (1 - eps)/(1 + eps)`` from the RIMO (matches
+            qp_planck ``rhohit: IMO``). If ``False``, assume ideal detectors (``rho = 1``,
+            qp_planck ``rhohit: Ideal``). Does not affect the temperature map.
     """
 
     nside: int
     nest: bool = False
+    use_cross_pol: bool = True
 
 
 @dataclass
@@ -199,6 +204,7 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
         map=MapConfig(
             nside=int(data["map"]["nside"]),
             nest=bool(map_cfg.get("nest", False)),
+            use_cross_pol=bool(map_cfg.get("use_cross_pol", True)),
         ),
         output=OutputConfig(
             output_dir=str(output_cfg.get("output_dir", "outputs")),

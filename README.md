@@ -28,8 +28,11 @@ Important fields:
 4. `inputs.pointing.mission_length`: OD selector (`full`, `survey 1` ... `survey 5`, or explicit `91-99`). Defaults to `full`.
 4. `detector_selection`: choose either a channel/detset alias or an explicit detector list.
 5. `convolution.lmax` / `convolution.mmax`: harmonic limits.
-6. `map.nside`: output HEALPix map resolution.
-7. `resampling.coordinate_system`: pointing frame (`ecliptic` or `galactic`).
+6. `convolution.polarized_beam`: `true` (default) synthesises a spin-2 `[T,E,B]` beam from the scalar Planck blm (ideal co-polar detector); `false` uses the intensity beam only (`[b,0,0]`, Q/U ~ 0) — use `false` to validate the temperature window against an intensity-only QuickPol `B_ell`.
+7. `convolution.extra_psi_deg`: diagnostic only — constant offset (deg) on the convolution psi (beam orientation), not the map-making psi. Keep `0.0` for production.
+8. `map.nside`: output HEALPix map resolution.
+9. `map.use_cross_pol`: `true` (default) weights the map-making polarisation by the per-detector `rho = (1-eps)/(1+eps)` from the RIMO (= qp_planck `rhohit: IMO`); `false` assumes ideal detectors (`rho = 1`, qp_planck `rhohit: Ideal`). Temperature is unaffected.
+10. `resampling.coordinate_system`: pointing frame (`ecliptic` or `galactic`).
 
 ## Run
 

@@ -276,6 +276,7 @@ def load_rimo_detectors(rimo_path: str | Path) -> dict[str, dict[str, np.ndarray
         has_theta = "THETA_UV" in names
         has_psi = "PSI_UV" in names
         has_psi_pol = "PSI_POL" in names
+        has_eps = "EPSILON" in names
 
         for row in tab:
             det = _to_text(row[det_col])
@@ -285,11 +286,15 @@ def load_rimo_detectors(rimo_path: str | Path) -> dict[str, dict[str, np.ndarray
                 theta_uv = float(row["THETA_UV"])
                 psi_uv = float(row["PSI_UV"])
                 psi_pol = float(row["PSI_POL"]) if has_psi_pol else 0.0
+                eps = float(row["EPSILON"]) if has_eps else 0.0
                 rec["phi_uv"] = phi_uv
                 rec["theta_uv"] = theta_uv
                 rec["psi_uv"] = psi_uv
                 rec["psi_pol"] = psi_pol
                 rec["psi_pol_rad"] = psi_pol * (np.pi / 180.0)
+                rec["epsilon"] = eps
+                # Polarisation efficiency rho = (1 - eps)/(1 + eps); 1.0 for ideal.
+                rec["rho_pol"] = (1.0 - eps) / (1.0 + eps)
                 rec["quat"] = _rimo_detector_quat(phi_uv, theta_uv, psi_uv, psi_pol)
             out[det] = rec
     if not out:

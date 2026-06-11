@@ -65,3 +65,34 @@ def test_intensity_only_when_axis_drops_out():
     r30 = (np.abs(p30[1]) ** 2).sum() / (np.abs(p30[0]) ** 2).sum()
     assert abs(r0 - 0.25) < 0.02
     assert abs(r0 - r30) < 1e-3
+
+
+def test_accumulate_tqu_rho_leaves_temperature_unchanged():
+    """rho (cross-pol) must not change the recovered I/temperature, only Q/U."""
+    import numpy as np
+    from pquick.mapmaking import accumulate_tqu_matrix, solve_tqu_from_matrix
+
+    rng = np.random.default_rng(0)
+    n = 20000
+    npix = 12
+    pix = rng.integers(0, npix, size=n)
+    psi = rng.uniform(0, np.pi, size=n)          # full angle coverage per pixel
+    I, Q, U = 5.0, 1.3, -0.7
+    rho = 0.9
+    # Simulate an ideal-pointing TOD of a polarised sky seen through efficiency rho.
+    tod = I + rho * (Q * np.cos(2 * psi) + U * np.sin(2 * psi))
+
+    m = np.zeros((npix, 3, 3))
+    accumulate_tqu_matrix(m, pix, psi, tod, det_weight=1.0, rho=rho)
+    t, q, u = solve_tqu_from_matrix(m)
+    good = t > -1e29
+    assert np.allclose(t[good], I, atol=1e-6)
+    assert np.allclose(q[good], Q, atol=1e-6)
+    assert np.allclose(u[good], U, atol=1e-6)
+
+    # With rho=1 (ideal) but the same polarised TOD, I is still recovered exactly
+    # (temperature is rho-independent), while Q/U are biased by 1/rho.
+    m1 = np.zeros((npix, 3, 3))
+    accumulate_tqu_matrix(m1, pix, psi, tod, det_weight=1.0, rho=1.0)
+    t1, q1, u1 = solve_tqu_from_matrix(m1)
+    assert np.allclose(t1[t1 > -1e29], I, atol=1e-6)
