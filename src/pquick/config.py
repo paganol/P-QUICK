@@ -89,6 +89,10 @@ class ConvolutionConfig:
             beam ``[T, E, B]`` from the scalar co-polar Planck blm so the convolution
             captures the detector polarisation response. If ``False``, use the
             intensity beam only (``[b, 0, 0]``); Q/U recover ~0.
+        extra_psi_deg: Constant offset (degrees) added to the convolution psi only
+            (the beam orientation), not to the map-making psi. Diagnostic knob for
+            an asymmetric-beam orientation error: sweep it and look for the value
+            that flattens the transfer-function ratio. ``0`` for production.
     """
 
     lmax: int
@@ -97,6 +101,7 @@ class ConvolutionConfig:
     chunks: int = 1
     beam_normalization: str = "unit_integral"
     polarized_beam: bool = True
+    extra_psi_deg: float = 0.0
 
 
 @dataclass
@@ -189,6 +194,7 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
             chunks=int(data.get("convolution", {}).get("chunks", 1)),
             beam_normalization=str(data.get("convolution", {}).get("beam_normalization", "unit_integral")),
             polarized_beam=bool(data.get("convolution", {}).get("polarized_beam", True)),
+            extra_psi_deg=float(data.get("convolution", {}).get("extra_psi_deg", 0.0)),
         ),
         map=MapConfig(
             nside=int(data["map"]["nside"]),

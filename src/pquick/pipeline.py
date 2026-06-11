@@ -211,6 +211,12 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 lmax=config.convolution.lmax,
                 mmax=config.convolution.mmax,
             )
+            _vprint(
+                verbose,
+                rank,
+                f"  [beam] {det}: spin-2 polarised [T,E,B] beam built "
+                f"(ncomp={beam_alm.shape[0]}, psi_pol={np.degrees(psi_pol_rad):.3f} deg)",
+            )
         beam_alm = normalize_beam_alm(
             beam_alm,
             mode=config.convolution.beam_normalization,
@@ -438,6 +444,10 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 #   intensity-only -> scalar beam is Dxx, convolve at psi_dxx
                 #                     (offset psi_pol)
                 psi_conv_offset = 0.0 if config.convolution.polarized_beam else psi_pol_rad
+                # Diagnostic: constant beam-orientation offset on the convolution psi
+                # only (not map-making). Sweep convolution.extra_psi_deg to find the
+                # value that flattens an asymmetric-beam transfer-function ratio.
+                psi_conv_offset += np.radians(config.convolution.extra_psi_deg)
                 _t0 = _time.perf_counter()
                 bore_det_to_ptg(
                     q_bore_good,
