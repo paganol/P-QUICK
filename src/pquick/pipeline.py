@@ -231,6 +231,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 "quat": dquat,
                 "weight": detector_map_weight(det),
                 "psi_pol_rad": psi_pol_rad,
+                "psi_uv_rad": float(dmeta.get("psi_uv_rad", 0.0)),
                 "rho_pol": (
                     float(dmeta.get("rho_pol", 1.0))
                     if config.map.use_cross_pol
@@ -407,6 +408,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 det_weight = cast(float, dinfo["weight"])
                 det_name = str(dinfo["name"])
                 psi_pol_rad = cast(float, dinfo["psi_pol_rad"])
+                psi_uv_rad = cast(float, dinfo["psi_uv_rad"])
                 rho_pol = cast(float, dinfo["rho_pol"])
 
                 _vprint(
@@ -450,6 +452,13 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 #   intensity-only -> scalar beam is Dxx, convolve at psi_dxx
                 #                     (offset psi_pol)
                 psi_conv_offset = 0.0 if config.convolution.polarized_beam else psi_pol_rad
+                # Co-orient PSB arms: remove the per-detector psi_uv from the beam
+                # orientation (kept in the map-making psi_buf for polarisation), so
+                # the two near-identical arm beams convolve co-oriented on the sky
+                # instead of 90 deg apart. Matches qp_planck's scan-relative frame
+                # where psi_uv cancels between beam rotation and scan spin moments.
+                if config.convolution.coorient_beams:
+                    psi_conv_offset -= psi_uv_rad
                 # Diagnostic: constant beam-orientation offset on the convolution psi
                 # only (not map-making). Sweep convolution.extra_psi_deg to find the
                 # value that flattens an asymmetric-beam transfer-function ratio.

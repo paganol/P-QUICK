@@ -292,6 +292,7 @@ def load_rimo_detectors(rimo_path: str | Path) -> dict[str, dict[str, np.ndarray
                 rec["psi_uv"] = psi_uv
                 rec["psi_pol"] = psi_pol
                 rec["psi_pol_rad"] = psi_pol * (np.pi / 180.0)
+                rec["psi_uv_rad"] = psi_uv * (np.pi / 180.0)
                 rec["epsilon"] = eps
                 # Polarisation efficiency rho = (1 - eps)/(1 + eps); 1.0 for ideal.
                 rec["rho_pol"] = (1.0 - eps) / (1.0 + eps)
