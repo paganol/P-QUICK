@@ -211,6 +211,11 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 lmax=config.convolution.lmax,
                 mmax=config.convolution.mmax,
                 psi_uv_rad=float(dmeta.get("psi_uv_rad", 0.0)),
+                # Match the map-making polarisation efficiency so EE/BB are not
+                # inflated by 1/rho^2 (1.0 when use_cross_pol is off).
+                rho_pol=(
+                    float(dmeta.get("rho_pol", 1.0)) if config.map.use_cross_pol else 1.0
+                ),
             )
             _vprint(
                 verbose,

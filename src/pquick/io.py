@@ -448,6 +448,7 @@ def build_polarized_beam_alm(
     mmax: int,
     nside: int | None = None,
     psi_uv_rad: float = 0.0,
+    rho_pol: float = 1.0,
 ) -> np.ndarray:
     """Build an ideal co-polar polarised beam ``[T, E, B]`` from a scalar Planck blm.
 
@@ -513,6 +514,13 @@ def build_polarized_beam_alm(
     chi = -2.0 * phi
     iqu = np.array([beam_map, beam_map * np.cos(chi), beam_map * np.sin(chi)])
     _, e_alm, b_alm = hp.map2alm(iqu, lmax=lmax, mmax=mmax, pol=True, iter=3)
+
+    # Polarisation efficiency: scale the E/B (polarised) response by rho so the
+    # simulated TOD matches the rho-weighted map-making (map.use_cross_pol). Without
+    # this the ideal (rho=1) beam over-drives the rho-weighted solve and EE/BB come
+    # out inflated by 1/rho^2. qp_planck carries rho in both beam and hit matrix.
+    e_alm = e_alm * float(rho_pol)
+    b_alm = b_alm * float(rho_pol)
 
     # The whole beam is convolved at the Pxx polarisation angle psi_pxx = psi_buf
     # (so E/B and map-making share the same polarisation frame). But the *intensity*
