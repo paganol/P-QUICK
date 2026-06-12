@@ -30,6 +30,8 @@ Important fields:
 5. `convolution.lmax` / `convolution.mmax`: harmonic limits.
 6. `convolution.polarized_beam`: `true` (default) synthesises a spin-2 `[T,E,B]` beam from the scalar Planck blm (ideal co-polar detector); `false` uses the intensity beam only (`[b,0,0]`, Q/U ~ 0) — use `false` to validate the temperature window against an intensity-only QuickPol `B_ell`.
 7. `convolution.extra_psi_deg`: diagnostic only — constant offset (deg) on the convolution psi (beam orientation), not the map-making psi. Keep `0.0` for production.
+
+The per-detector `psi_uv` is always removed from the beam-shape convolution orientation (kept only in the map-making polarization angle), so a horn's two PSB arms convolve their near-identical beams co-oriented on the sky instead of 90° apart — the scan-relative frame qp_planck uses. Without it the orthogonal arms cancel the channel beam ellipticity and the temperature window is wrong.
 8. `map.nside`: output HEALPix map resolution.
 9. `map.use_cross_pol`: `true` (default) weights the map-making polarisation by the per-detector `rho = (1-eps)/(1+eps)` from the RIMO (= qp_planck `rhohit: IMO`); `false` assumes ideal detectors (`rho = 1`, qp_planck `rhohit: Ideal`). Temperature is unaffected.
 10. `resampling.coordinate_system`: pointing frame (`ecliptic` or `galactic`).

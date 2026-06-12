@@ -447,6 +447,7 @@ def build_polarized_beam_alm(
     lmax: int,
     mmax: int,
     nside: int | None = None,
+    psi_uv_rad: float = 0.0,
 ) -> np.ndarray:
     """Build an ideal co-polar polarised beam ``[T, E, B]`` from a scalar Planck blm.
 
@@ -480,10 +481,15 @@ def build_polarized_beam_alm(
         mmax: Maximum azimuthal order to retain in the output beam.
         nside: HEALPix resolution for the intermediate map; defaults to the smallest
             power of two with ``2 * nside >= lmax``.
+        psi_uv_rad: Detector ``psi_uv`` (radians). The T (intensity) component is
+            pre-rotated by ``-psi_uv`` so that, convolved at ``psi_pxx``, the beam
+            shape stays co-oriented across a horn's two PSB arms (their identical
+            ellipses would otherwise land 90 deg apart and cancel); the E/B
+            (polarisation) components keep the polarisation axis at ``psi_pxx``.
 
     Returns:
         Complex128 array of shape ``(3, nalm)`` holding ``[T, E, B]`` beam alm at
-        ``(lmax, mmax)``, in the Pxx frame.
+        ``(lmax, mmax)``, in the Pxx frame. Convolve at ``psi_pxx = psi_buf``.
     """
     bb = beam_alm_scalar[0] if np.ndim(beam_alm_scalar) == 2 else np.asarray(beam_alm_scalar)
     bb = np.ascontiguousarray(bb, dtype=np.complex128)
@@ -497,19 +503,26 @@ def build_polarized_beam_alm(
     # (same sense as qp_planck's e^{i m (psi_uv+psi_pol)}; psi_uv is carried by the
     # pointing quaternion, so only psi_pol remains here).
     ell, emm = hp.Alm.getlm(lmax, np.arange(bb.size))
-    bb = bb * np.exp(1j * emm * float(psi_pol_rad))
+    bb_pol = bb * np.exp(1j * emm * float(psi_pol_rad))
 
     # Synthesise the intensity beam map and build the ideal co-polar Stokes pattern.
     # Pol axis = Pxx x-axis, so psi_pol drops out of chi here. The spin-2 (E/B)
-    # response is obtained by map2alm(pol=True); the T component is taken directly
-    # from the (rotated) input alm so it is preserved exactly, unaffected by the
-    # intermediate pixelisation.
-    beam_map = hp.alm2map(bb, nside, lmax=lmax, mmax=mmax)
+    # response is obtained by map2alm(pol=True).
+    beam_map = hp.alm2map(bb_pol, nside, lmax=lmax, mmax=mmax)
     phi = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))[1]
     chi = -2.0 * phi
     iqu = np.array([beam_map, beam_map * np.cos(chi), beam_map * np.sin(chi)])
     _, e_alm, b_alm = hp.map2alm(iqu, lmax=lmax, mmax=mmax, pol=True, iter=3)
-    return np.ascontiguousarray(np.array([bb, e_alm, b_alm], dtype=np.complex128))
+
+    # The whole beam is convolved at the Pxx polarisation angle psi_pxx = psi_buf
+    # (so E/B and map-making share the same polarisation frame). But the *intensity*
+    # beam shape must stay co-oriented across a horn's two PSB arms (psi_uv removed),
+    # otherwise their identical ellipses land 90 deg apart and cancel. So pre-rotate
+    # only the T component by -psi_uv: convolved at psi_pxx its shape lands at the
+    # boresight (psi_uv-free) frame, while E/B keep the polarisation axis at psi_pxx.
+    # T is taken from the (rotated) input alm so it is exact (no pixelisation).
+    bb_T = bb * np.exp(1j * emm * (float(psi_pol_rad) - float(psi_uv_rad)))
+    return np.ascontiguousarray(np.array([bb_T, e_alm, b_alm], dtype=np.complex128))
 
 
 def normalize_beam_alm(beam_alm: np.ndarray, mode: str = "unit_integral") -> np.ndarray:

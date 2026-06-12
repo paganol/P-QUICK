@@ -93,14 +93,14 @@ class ConvolutionConfig:
             (the beam orientation), not to the map-making psi. Diagnostic knob for
             an asymmetric-beam orientation error: sweep it and look for the value
             that flattens the transfer-function ratio. ``0`` for production.
-        coorient_beams: If ``True``, remove the per-detector ``psi_uv`` from the
-            beam-shape convolution orientation (keeping it in the map-making
-            polarisation angle), so the two PSB arms of a horn convolve their
-            (near-identical) beams co-oriented on the sky instead of 90 deg apart.
-            This makes P-QUICK scan-relative like qp_planck (where ``psi_uv``
-            cancels between the beam rotation and the scan spin moments); without
-            it the orthogonal arms cancel the channel beam ellipticity. Default
-            ``False`` for A/B testing.
+
+    Note: the per-detector ``psi_uv`` is always removed from the beam-shape
+    convolution orientation (kept only in the map-making polarisation angle), so a
+    horn's two PSB arms convolve their near-identical beams co-oriented on the sky
+    rather than 90 deg apart. This is the scan-relative frame qp_planck uses (where
+    ``psi_uv`` cancels between the beam rotation and the scan spin moments);
+    without it the orthogonal arms cancel the channel beam ellipticity and the
+    temperature window is wrong.
     """
 
     lmax: int
@@ -110,7 +110,6 @@ class ConvolutionConfig:
     beam_normalization: str = "unit_integral"
     polarized_beam: bool = True
     extra_psi_deg: float = 0.0
-    coorient_beams: bool = False
 
 
 @dataclass
@@ -209,7 +208,6 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
             beam_normalization=str(data.get("convolution", {}).get("beam_normalization", "unit_integral")),
             polarized_beam=bool(data.get("convolution", {}).get("polarized_beam", True)),
             extra_psi_deg=float(data.get("convolution", {}).get("extra_psi_deg", 0.0)),
-            coorient_beams=bool(data.get("convolution", {}).get("coorient_beams", False)),
         ),
         map=MapConfig(
             nside=int(data["map"]["nside"]),

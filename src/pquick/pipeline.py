@@ -210,6 +210,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 psi_pol_rad=psi_pol_rad,
                 lmax=config.convolution.lmax,
                 mmax=config.convolution.mmax,
+                psi_uv_rad=float(dmeta.get("psi_uv_rad", 0.0)),
             )
             _vprint(
                 verbose,
@@ -451,14 +452,18 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 #                     (offset 0)
                 #   intensity-only -> scalar beam is Dxx, convolve at psi_dxx
                 #                     (offset psi_pol)
-                psi_conv_offset = 0.0 if config.convolution.polarized_beam else psi_pol_rad
-                # Co-orient PSB arms: remove the per-detector psi_uv from the beam
-                # orientation (kept in the map-making psi_buf for polarisation), so
-                # the two near-identical arm beams convolve co-oriented on the sky
-                # instead of 90 deg apart. Matches qp_planck's scan-relative frame
-                # where psi_uv cancels between beam rotation and scan spin moments.
-                if config.convolution.coorient_beams:
-                    psi_conv_offset -= psi_uv_rad
+                # Beam-shape co-orientation across a horn's PSB arms (remove psi_uv),
+                # while keeping psi_uv in the map-making psi_buf for polarisation.
+                #   polarized_beam: convolve at psi_pxx = psi_buf (offset 0) so E/B
+                #     and map-making share the polarisation frame; the T component
+                #     was pre-rotated by -psi_uv in build_polarized_beam_alm to keep
+                #     the intensity shape co-oriented.
+                #   intensity-only: scalar Dxx beam, co-orient by removing psi_uv
+                #     from the convolution psi directly (no polarisation to preserve).
+                if config.convolution.polarized_beam:
+                    psi_conv_offset = 0.0
+                else:
+                    psi_conv_offset = psi_pol_rad - psi_uv_rad
                 # Diagnostic: constant beam-orientation offset on the convolution psi
                 # only (not map-making). Sweep convolution.extra_psi_deg to find the
                 # value that flattens an asymmetric-beam transfer-function ratio.

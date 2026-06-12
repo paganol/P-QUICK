@@ -96,3 +96,57 @@ def test_accumulate_tqu_rho_leaves_temperature_unchanged():
     accumulate_tqu_matrix(m1, pix, psi, tod, det_weight=1.0, rho=1.0)
     t1, q1, u1 = solve_tqu_from_matrix(m1)
     assert np.allclose(t1[t1 > -1e29], I, atol=1e-6)
+
+
+def test_polarized_beam_recovers_e_mode_and_psb_arms_agree():
+    """A pure-E sky convolved with the synthesised beam recovers Q/U, and the two
+    PSB arms of a horn (psi_uv ~90 deg apart) recover identical polarization."""
+    import healpy as hp
+    import numpy as np
+    from pquick.convolution import convolve_timeline
+    from pquick.io import build_polarized_beam_alm, normalize_beam_alm
+    from pquick.mapmaking import accumulate_tqu_matrix, solve_tqu_from_matrix
+
+    lmax, mmax, nside = 192, 4, 128
+    # A near-Gaussian scalar intensity beam (m=0) as the input blm.
+    sig = np.radians(0.5) / np.sqrt(8 * np.log(2))
+    ell = np.arange(lmax + 1)
+    bl = np.exp(-0.5 * ell * (ell + 1) * sig**2)
+    scal = np.zeros((1, hp.Alm.getsize(lmax, mmax)), dtype=np.complex128)
+    scal[0, hp.Alm.getidx(lmax, ell, 0)] = bl * np.sqrt((2 * ell + 1) / (4 * np.pi))
+    scal = normalize_beam_alm(scal)
+
+    # pure-E sky
+    cle = np.zeros(lmax + 1)
+    cle[2:] = (np.arange(2, lmax + 1) / 50.0) ** -2.0
+    almE = hp.synalm(cle, lmax=lmax)
+    z = np.zeros_like(almE)
+    sky = np.array([z, almE, z])
+    _, Qm, Um = hp.alm2map([sky[0], sky[1], sky[2]], nside, lmax=lmax, pol=True)
+
+    pix = hp.ang2pix(nside, np.pi / 2, 1.0)
+    th, ph = hp.pix2ang(nside, pix)
+    psis = np.linspace(0, np.pi, 48, endpoint=False)
+
+    def recover(psi_uv_deg, psi_pol_deg):
+        beam = normalize_beam_alm(
+            build_polarized_beam_alm(
+                scal, psi_pol_rad=np.radians(psi_pol_deg), lmax=lmax, mmax=mmax,
+                psi_uv_rad=np.radians(psi_uv_deg),
+            )
+        )
+        M = np.zeros((hp.nside2npix(nside), 3, 3))
+        for ps in psis:
+            tod = convolve_timeline(sky, beam, np.array([[th, ph, ps]]), lmax=lmax, mmax=mmax)
+            accumulate_tqu_matrix(M, np.array([pix]), np.array([ps]), np.asarray(tod), 1.0)
+        I, Q, U = solve_tqu_from_matrix(M)
+        return I[pix], Q[pix], U[pix]
+
+    Ia, Qa, Ua = recover(23.1, 0.22)    # 100-1a
+    Ib, Qb, Ub = recover(-68.2, 0.13)   # 100-1b (psi_uv ~90 deg from a)
+
+    # recovered Q/U align with the input sky (within beam smoothing), not cancelled
+    assert np.sign(Qa) == np.sign(Qm[pix]) and np.sign(Ua) == np.sign(Um[pix])
+    assert abs(Qa / Qm[pix] - 1.0) < 0.1 and abs(Ua / Um[pix] - 1.0) < 0.1
+    # the two arms agree (the bug made them cancel / disagree)
+    assert abs(Qa - Qb) < 1e-3 * abs(Qa) and abs(Ua - Ub) < 1e-3 * abs(Ua)
