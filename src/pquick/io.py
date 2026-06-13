@@ -482,11 +482,13 @@ def build_polarized_beam_alm(
         mmax: Maximum azimuthal order to retain in the output beam.
         nside: HEALPix resolution for the intermediate map; defaults to the smallest
             power of two with ``2 * nside >= lmax``.
-        psi_uv_rad: Detector ``psi_uv`` (radians). The T (intensity) component is
-            pre-rotated by ``-psi_uv`` so that, convolved at ``psi_pxx``, the beam
-            shape stays co-oriented across a horn's two PSB arms (their identical
-            ellipses would otherwise land 90 deg apart and cancel); the E/B
-            (polarisation) components keep the polarisation axis at ``psi_pxx``.
+        psi_uv_rad: Detector ``psi_uv`` (radians). The beam *shape* of all three
+            (T, E, B) components is pre-rotated by ``-psi_uv`` so that, convolved at
+            ``psi_pxx``, it stays co-oriented across a horn's two PSB arms (their
+            identical ellipses would otherwise land 90 deg apart and cancel). For
+            E/B the spin-2 phase ``chi`` carries a compensating ``+psi_uv`` so the
+            polarisation axis is still restored to ``psi_pxx``; only the shape, not
+            the polarisation direction, follows psi_uv.
 
     Returns:
         Complex128 array of shape ``(3, nalm)`` holding ``[T, E, B]`` beam alm at
@@ -504,14 +506,23 @@ def build_polarized_beam_alm(
     # (same sense as qp_planck's e^{i m (psi_uv+psi_pol)}; psi_uv is carried by the
     # pointing quaternion, so only psi_pol remains here).
     ell, emm = hp.Alm.getlm(lmax, np.arange(bb.size))
-    bb_pol = bb * np.exp(1j * emm * float(psi_pol_rad))
+
+    # Co-orient the E/B *shape* the same way as the T component (see bb_T below):
+    # the intensity ellipse must have psi_uv removed so a horn's two PSB arms (their
+    # psi_uv differ by ~90 deg) carry identically-oriented ellipses instead of
+    # landing 90 deg apart and partially cancelling. Without this, EE is recovered
+    # at ~half amplitude and the lost power leaks into the T solve (T<-E leakage).
+    # The polarisation axis is then restored to psi_pxx by the +psi_uv compensation
+    # inside the spin-2 phase chi; the (-psi_uv shape, +psi_uv chi) pairing was
+    # confirmed empirically (the opposite chi sign gives ~2x less EE and ~70x more
+    # T<-E leakage).
+    bb_pol = bb * np.exp(1j * emm * (float(psi_pol_rad) - float(psi_uv_rad)))
 
     # Synthesise the intensity beam map and build the ideal co-polar Stokes pattern.
-    # Pol axis = Pxx x-axis, so psi_pol drops out of chi here. The spin-2 (E/B)
-    # response is obtained by map2alm(pol=True).
+    # The spin-2 (E/B) response is obtained by map2alm(pol=True).
     beam_map = hp.alm2map(bb_pol, nside, lmax=lmax, mmax=mmax)
     phi = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))[1]
-    chi = -2.0 * phi
+    chi = -2.0 * (phi - float(psi_uv_rad))
     iqu = np.array([beam_map, beam_map * np.cos(chi), beam_map * np.sin(chi)])
     _, e_alm, b_alm = hp.map2alm(iqu, lmax=lmax, mmax=mmax, pol=True, iter=3)
 
