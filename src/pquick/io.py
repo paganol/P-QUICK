@@ -507,22 +507,22 @@ def build_polarized_beam_alm(
     # pointing quaternion, so only psi_pol remains here).
     ell, emm = hp.Alm.getlm(lmax, np.arange(bb.size))
 
-    # Co-orient the E/B *shape* the same way as the T component (see bb_T below):
-    # the intensity ellipse must have psi_uv removed so a horn's two PSB arms (their
-    # psi_uv differ by ~90 deg) carry identically-oriented ellipses instead of
-    # landing 90 deg apart and partially cancelling. Without this, EE is recovered
-    # at ~half amplitude and the lost power leaks into the T solve (T<-E leakage).
-    # The polarisation axis is then restored to psi_pxx by the +psi_uv compensation
-    # inside the spin-2 phase chi; the (-psi_uv shape, +psi_uv chi) pairing was
-    # confirmed empirically (the opposite chi sign gives ~2x less EE and ~70x more
-    # T<-E leakage).
-    bb_pol = bb * np.exp(1j * emm * (float(psi_pol_rad) - float(psi_uv_rad)))
+    # E/B (spin-2) must NOT be psi_uv-de-rotated the way the scalar T beam is. For the
+    # polarised response, psi_uv carries the per-arm polarisation orthogonality (the
+    # ~90 deg difference between a horn's two PSB arms). Removing psi_uv from the E/B
+    # shape destroys that orthogonality, the two arms' polarised beams cancel, and EE
+    # collapses to ~zero (confirmed on the full-sky transfer function). So apply only
+    # psi_pol here and keep psi_uv: it is supplied by the convolution (pointing
+    # quaternion) as the Pxx polarisation axis. Only the scalar T shape is
+    # psi_uv-de-rotated (bb_T below), which is harmless for an intensity pattern.
+    bb_pol = bb * np.exp(1j * emm * float(psi_pol_rad))
 
     # Synthesise the intensity beam map and build the ideal co-polar Stokes pattern.
+    # Pol axis = Pxx x-axis (psi_pol applied above), so psi_pol drops out of chi here.
     # The spin-2 (E/B) response is obtained by map2alm(pol=True).
     beam_map = hp.alm2map(bb_pol, nside, lmax=lmax, mmax=mmax)
     phi = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))[1]
-    chi = -2.0 * (phi - float(psi_uv_rad))
+    chi = -2.0 * phi
     iqu = np.array([beam_map, beam_map * np.cos(chi), beam_map * np.sin(chi)])
     _, e_alm, b_alm = hp.map2alm(iqu, lmax=lmax, mmax=mmax, pol=True, iter=3)
 
