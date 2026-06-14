@@ -507,21 +507,13 @@ def build_polarized_beam_alm(
     # pointing quaternion, so only psi_pol remains here).
     ell, emm = hp.Alm.getlm(lmax, np.arange(bb.size))
 
-    # A polarised beam has TWO independent orientations that must be handled
-    # separately here:
-    #   (1) the intensity ENVELOPE (beam ellipse): both PSB arms of a horn share the
-    #       same optics, so the ellipse must be arm-invariant on the sky. The
-    #       convolution adds psi_uv per arm, so the envelope is pre-de-rotated by
-    #       -psi_uv (same as the scalar T beam, bb_T below). Skipping this leaves the
-    #       two arms' ellipses ~90 deg apart -> partial cancellation -> a smooth EE
-    #       droop (the polarised analogue of the pre-fix TT co-orientation bug).
-    #   (2) the POLARISATION direction: orthogonal between the two arms (the 90 deg
-    #       lives in psi_uv), so psi_uv must be KEPT here. It is set by chi alone
-    #       (the envelope rotation only modulates amplitude, not pol angle) and is
-    #       supplied per-arm by the convolution as the Pxx pol axis. chi therefore
-    #       stays -2*phi: compensating chi by psi_uv (as an earlier version did)
-    #       moves both arms to the same pol axis and collapses EE to ~zero.
-    bb_pol = bb * np.exp(1j * emm * (float(psi_pol_rad) - float(psi_uv_rad)))
+    # The polarised beam is one rigid spin-2 object: its intensity envelope and
+    # its polarisation direction rotate together. So apply only psi_pol here and
+    # keep psi_uv (supplied per-arm by the convolution as the Pxx pol axis). Do NOT
+    # de-rotate the envelope by -psi_uv the way the scalar T beam (bb_T) is: trying
+    # to rotate the ellipse independently of the pol axis is unphysical and measures
+    # worse on the full-sky EE transfer (0.935 vs 0.96 with psi_pol only).
+    bb_pol = bb * np.exp(1j * emm * float(psi_pol_rad))
 
     # Synthesise the intensity beam map and build the ideal co-polar Stokes pattern.
     # The spin-2 (E/B) response is obtained by map2alm(pol=True).
