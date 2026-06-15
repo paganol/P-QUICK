@@ -43,10 +43,18 @@ CLI flags: --rimo_file --pointings --flags --bad_rings_file --mission_length
 psi is the same per-sample orientation the map-making uses (`bore_det_to_angles`), and
 the same flags the pipeline applies (common + bad-ring + per-horn) are honoured so the
 hit counts line up with the maps.
+
+**MPI**: ODs are partitioned round-robin across ranks and the per-detector maps are
+sum-reduced to rank 0, which writes the files — so a full-mission build scales ~linearly
+with ranks. Run e.g. ``srun -n 64 python scripts/build_polmoments.py ...`` (or
+``mpirun -n 64 ...``); without MPI it runs serially. Each rank holds the full
+accumulators (per detector: 13 maps), so keep nside at the qp_planck reference (256,
+~0.7 GB for the 8 100GHz detectors) rather than 2048.
 """
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -65,7 +73,10 @@ from pquick.pipeline import (
     _chunk_bad_ring_mask,
     _det_to_horn,
     _detector_channel_ghz,
+    _get_mpi,
     _load_bad_ring_intervals,
+    _local_slice,
+    _sum_reduce,
 )
 from pquick.pointing import build_pointing_interpolator
 from pquick.quaternion import bore_det_to_angles, normalize_quaternion
@@ -76,6 +87,17 @@ from pquick.utilities import (
 )
 
 KMAX = 6  # qp_planck stores k = 1..6  -> 12 columns
+
+# Feedback levels: 0 quiet (errors + final line only), 1 normal (headers + per-detector
+# writes), 2 verbose (+ per-OD progress), 3 debug (+ per-OD timing).
+DEFAULT_FEEDBACK = 1
+
+
+def _vlog(fb: int, level: int, msg: str) -> None:
+    """Print *msg* when the active feedback level is at least *level*."""
+    if fb >= level:
+        print(msg, flush=True)
+
 
 # Standard inputs / resampling, matching configs/default.yaml. Used when --config is
 # not given (or to fill any field a config leaves unset); individual --pointings /
@@ -102,6 +124,7 @@ def _build_cfg(args: argparse.Namespace):
     det_sel = DetectorSelection()
     nside = DEFAULT_NSIDE
     output_dir = None
+    feedback = DEFAULT_FEEDBACK
     if args.config is not None:
         # Parse only the blocks polmoments needs; a full P-QUICK YAML works too.
         with open(args.config) as fh:
@@ -120,6 +143,10 @@ def _build_cfg(args: argparse.Namespace):
             nside = int(oc["nside"])
         if oc.get("output_dir") is not None:
             output_dir = str(oc["output_dir"])
+        if data.get("feedback") is not None:
+            feedback = int(data["feedback"])
+        elif data.get("verbose") is not None:  # accept P-QUICK's bool 'verbose'
+            feedback = 2 if bool(data["verbose"]) else 0
     # CLI overrides (flag names match the YAML leaves).
     if args.rimo_file is not None:
         inputs.rimo_file = args.rimo_file
@@ -137,11 +164,14 @@ def _build_cfg(args: argparse.Namespace):
         nside = int(args.nside)
     if args.output_dir is not None:
         output_dir = str(args.output_dir)
+    if args.feedback is not None:
+        feedback = int(args.feedback)
     return SimpleNamespace(
         inputs=inputs,
         resampling=SimpleNamespace(coordinate_system=coord),
         detector_selection=det_sel,
         output=SimpleNamespace(nside=nside, output_dir=output_dir),
+        feedback=feedback,
     )
 
 
@@ -162,10 +192,15 @@ def _resolve_detectors(args: argparse.Namespace, cfg, all_dets: list[str]) -> li
     return sel
 
 
-def build_mission(cfg, detectors, quats, mission, nside, out_dir, chunk, use_flags):
-    """Accumulate and write per-detector polmoments for one mission length."""
+def build_mission(cfg, detectors, quats, mission, nside, out_dir, chunk, use_flags,
+                  fb=DEFAULT_FEEDBACK, comm=None, rank=0, size=1):
+    """Accumulate and write per-detector polmoments for one mission length.
+
+    ODs are partitioned round-robin across MPI ranks; each rank accumulates its
+    subset, the per-detector maps are sum-reduced to rank 0, which writes them.
+    """
     npix = hp.nside2npix(nside)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    fbe = fb if rank == 0 else -1  # only rank 0 prints
     od_start, od_end = parse_mission_length(mission)
     od_paths = build_pointing_file_paths(cfg.inputs.pointings, od_start, od_end)
     bad_rings = (
@@ -173,15 +208,20 @@ def build_mission(cfg, detectors, quats, mission, nside, out_dir, chunk, use_fla
         if (cfg.inputs.bad_rings_file is not None and use_flags)
         else None
     )
-    print(f"[mission '{mission}']  ODs {od_start}..{od_end} ({len(od_paths)})  nside={nside}  -> {out_dir}")
+    my_ods = len(_local_slice(od_paths, rank, size))
+    _vlog(fbe, 1, f"[mission '{mission}']  ODs {od_start}..{od_end} ({len(od_paths)}, "
+                  f"{my_ods}/rank over {size} rank(s))  nside={nside}  -> {out_dir}")
 
     cos_acc = {d: np.zeros((KMAX, npix)) for d in detectors}
     sin_acc = {d: np.zeros((KMAX, npix)) for d in detectors}
     hit_acc = {d: np.zeros(npix) for d in detectors}
 
     for oi, npz in enumerate(od_paths, 1):
+        if (oi - 1) % size != rank:  # round-robin partition of ODs across ranks
+            continue
+        _t0 = time.perf_counter()
         if not Path(npz).exists():
-            print(f"    [OD {oi}/{len(od_paths)}] MISSING {Path(npz).name} (skip)")
+            _vlog(fbe, 1, f"    [OD {oi}/{len(od_paths)}] MISSING {Path(npz).name} (skip)")
             continue
         interp = build_pointing_interpolator(load_pointing_npz(npz), coordinate_system=cfg.resampling.coordinate_system)
         n = interp.n_native
@@ -215,8 +255,18 @@ def build_mission(cfg, detectors, quats, mission, nside, out_dir, chunk, use_fla
                 for k in range(1, KMAX + 1):
                     cos_acc[d][k - 1] += np.bincount(pix, weights=np.cos(k * psi), minlength=npix)
                     sin_acc[d][k - 1] += np.bincount(pix, weights=np.sin(k * psi), minlength=npix)
-        print(f"    [OD {oi}/{len(od_paths)}] {Path(npz).name} done")
+        _dt = time.perf_counter() - _t0
+        _vlog(fbe, 2, f"    [OD {oi}/{len(od_paths)}] {Path(npz).name} done"
+                      + (f"  ({_dt:.1f}s)" if fb >= 3 else ""))
 
+    # Sum-reduce each per-detector map to rank 0 (no-op when serial).
+    for d in detectors:
+        hit_acc[d] = _sum_reduce(comm, hit_acc[d], rank)
+        cos_acc[d] = _sum_reduce(comm, cos_acc[d], rank)
+        sin_acc[d] = _sum_reduce(comm, sin_acc[d], rank)
+    if rank != 0:
+        return
+    out_dir.mkdir(parents=True, exist_ok=True)
     names = [f"COLUMN_{i+1}" for i in range(2 * KMAX)]
     for d in detectors:
         cols = []
@@ -228,7 +278,7 @@ def build_mission(cfg, detectors, quats, mission, nside, out_dir, chunk, use_fla
         hp.write_map(str(out_dir / f"polmoments_{d}_hits.fits"), hit_acc[d], nest=False, overwrite=True,
                      column_names=["T"], dtype=np.float64)
         nhit = int(np.count_nonzero(hit_acc[d]))
-        print(f"    wrote polmoments_{d}.fits (+_hits)  hit pixels={nhit}  fsky={nhit/npix:.4f}")
+        _vlog(fb, 1, f"    wrote polmoments_{d}.fits (+_hits)  hit pixels={nhit}  fsky={nhit/npix:.4f}")
 
 
 def main() -> None:
@@ -253,6 +303,9 @@ def main() -> None:
     p.add_argument("--nside", type=int, default=None, help="Output nside (default: 256).")
     p.add_argument("--output_dir", type=str, default=None, help="Base output dir (one sub-dir per mission if >1).")
     # utility
+    p.add_argument("--feedback", type=int, default=None, choices=range(0, 4), metavar="0-3",
+                   help="Verbosity: 0 quiet, 1 normal (default), 2 per-OD, 3 +timing. "
+                        "Also from YAML top-level 'feedback' (or 'verbose').")
     p.add_argument("--chunk", type=int, default=2_000_000, help="Native samples per chunk.")
     p.add_argument("--no-flags", action="store_true", help="Ignore per-horn/bad-ring flags (common flags only).")
     args = p.parse_args()
@@ -272,13 +325,18 @@ def main() -> None:
     missions = [m.strip() for m in (cfg.inputs.mission_length or "full").split(",") if m.strip()]
     use_flags = (cfg.inputs.flags is not None) and (not args.no_flags)
     out_base = Path(cfg.output.output_dir)
-    print(f"detectors ({len(detectors)}): {detectors}")
-    print(f"missions: {missions}  nside={cfg.output.nside}  coord={cfg.resampling.coordinate_system}  flags={use_flags}")
+    comm, rank, size = _get_mpi()
+    fb = cfg.feedback
+    fbe = fb if rank == 0 else -1  # only rank 0 prints
+    _vlog(fbe, 1, f"detectors ({len(detectors)}): {detectors}")
+    _vlog(fbe, 1, f"missions: {missions}  nside={cfg.output.nside}  coord={cfg.resampling.coordinate_system}"
+                  f"  flags={use_flags}  mpi_ranks={size}")
 
     for mission in missions:
         sub = out_base / mission.replace(" ", "_") if len(missions) > 1 else out_base
-        build_mission(cfg, detectors, quats, mission, int(cfg.output.nside), sub, int(args.chunk), use_flags)
-    print(f"\nDone -> {out_base}")
+        build_mission(cfg, detectors, quats, mission, int(cfg.output.nside), sub, int(args.chunk),
+                      use_flags, fb, comm, rank, size)
+    _vlog(fbe, 0, f"Done -> {out_base}")
 
 
 if __name__ == "__main__":
