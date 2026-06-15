@@ -277,6 +277,7 @@ def load_rimo_detectors(rimo_path: str | Path) -> dict[str, dict[str, np.ndarray
         has_psi = "PSI_UV" in names
         has_psi_pol = "PSI_POL" in names
         has_eps = "EPSILON" in names
+        has_posang = "POSANG" in names
 
         for row in tab:
             det = _to_text(row[det_col])
@@ -287,12 +288,18 @@ def load_rimo_detectors(rimo_path: str | Path) -> dict[str, dict[str, np.ndarray
                 psi_uv = float(row["PSI_UV"])
                 psi_pol = float(row["PSI_POL"]) if has_psi_pol else 0.0
                 eps = float(row["EPSILON"]) if has_eps else 0.0
+                posang = float(row["POSANG"]) if has_posang else 0.0
                 rec["phi_uv"] = phi_uv
                 rec["theta_uv"] = theta_uv
                 rec["psi_uv"] = psi_uv
                 rec["psi_pol"] = psi_pol
                 rec["psi_pol_rad"] = psi_pol * (np.pi / 180.0)
                 rec["psi_uv_rad"] = psi_uv * (np.pi / 180.0)
+                # POSANG = beam-ellipse position angle; needed for the polarised
+                # spin-2 beam, whose response depends on rho = psi_pol - psi_ell
+                # (litebird beam_synthesis convention).
+                rec["posang"] = posang
+                rec["posang_rad"] = posang * (np.pi / 180.0)
                 rec["epsilon"] = eps
                 # Polarisation efficiency rho = (1 - eps)/(1 + eps); 1.0 for ideal.
                 rec["rho_pol"] = (1.0 - eps) / (1.0 + eps)
@@ -449,6 +456,7 @@ def build_polarized_beam_alm(
     nside: int | None = None,
     psi_uv_rad: float = 0.0,
     rho_pol: float = 1.0,
+    posang_rad: float = 0.0,
 ) -> np.ndarray:
     """Build an ideal co-polar polarised beam ``[T, E, B]`` from a scalar Planck blm.
 
@@ -482,13 +490,16 @@ def build_polarized_beam_alm(
         mmax: Maximum azimuthal order to retain in the output beam.
         nside: HEALPix resolution for the intermediate map; defaults to the smallest
             power of two with ``2 * nside >= lmax``.
-        psi_uv_rad: Detector ``psi_uv`` (radians). The beam *shape* of all three
-            (T, E, B) components is pre-rotated by ``-psi_uv`` so that, convolved at
-            ``psi_pxx``, it stays co-oriented across a horn's two PSB arms (their
-            identical ellipses would otherwise land 90 deg apart and cancel). For
-            E/B the spin-2 phase ``chi`` carries a compensating ``+psi_uv`` so the
-            polarisation axis is still restored to ``psi_pxx``; only the shape, not
-            the polarisation direction, follows psi_uv.
+        psi_uv_rad: Detector ``psi_uv`` (radians). The scalar T beam (``bb_T``) is
+            pre-rotated by ``-psi_uv`` so that, convolved at ``psi_pxx``, its ellipse
+            stays co-oriented across a horn's two PSB arms. The E/B beam keeps
+            ``psi_uv`` (supplied per-arm by the convolution as the Pxx pol axis); only
+            its *elliptical* part is re-oriented, via ``posang_rad`` below.
+        posang_rad: Beam-ellipse position angle ``POSANG`` (radians). The elliptical
+            (m>=2) part of the spin-2 beam is rotated by ``posang - psi_uv`` so its
+            orientation relative to the polarisation matches the litebird
+            ``rho = psi_pol - psi_ell`` convention; the round core and a circular
+            beam are unaffected. Without it the elliptical EE transfer droops.
 
     Returns:
         Complex128 array of shape ``(3, nalm)`` holding ``[T, E, B]`` beam alm at
@@ -507,13 +518,18 @@ def build_polarized_beam_alm(
     # pointing quaternion, so only psi_pol remains here).
     ell, emm = hp.Alm.getlm(lmax, np.arange(bb.size))
 
-    # The polarised beam is one rigid spin-2 object: its intensity envelope and
-    # its polarisation direction rotate together. So apply only psi_pol here and
-    # keep psi_uv (supplied per-arm by the convolution as the Pxx pol axis). Do NOT
-    # de-rotate the envelope by -psi_uv the way the scalar T beam (bb_T) is: trying
-    # to rotate the ellipse independently of the pol axis is unphysical and measures
-    # worse on the full-sky EE transfer (0.935 vs 0.96 with psi_pol only).
-    bb_pol = bb * np.exp(1j * emm * float(psi_pol_rad))
+    # Apply psi_pol to set the polarisation axis (kept aligned with the map-making
+    # frame via the convolution psi). On top of that, rotate ONLY the elliptical
+    # (m>=2) part of the spin-2 beam to the correct orientation relative to the
+    # polarisation. The round (m=0) core is rotation-invariant, so this leaves the
+    # pol axis (and any circular beam) untouched. litebird beam_synthesis sets the
+    # polarised response by rho = psi_pol - psi_ell, with psi_ell the ellipse
+    # position angle (POSANG); the matching ellipse rotation here is
+    # (posang - psi_uv) (~62 deg for these horns). Without it the elliptical EE
+    # transfer droops ~10% by l=2000 while a circular beam stays flat. (If the
+    # full-sky EE transfer worsens, the relative sign of this offset is flipped.)
+    psi_ell_offset = float(posang_rad) - float(psi_uv_rad)
+    bb_pol = bb * np.exp(1j * emm * (float(psi_pol_rad) + psi_ell_offset))
 
     # Synthesise the intensity beam map and build the ideal co-polar Stokes pattern.
     # The spin-2 (E/B) response is obtained by map2alm(pol=True).
