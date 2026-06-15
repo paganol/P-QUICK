@@ -211,9 +211,6 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 lmax=config.convolution.lmax,
                 mmax=config.convolution.mmax,
                 psi_uv_rad=float(dmeta.get("psi_uv_rad", 0.0)),
-                # Beam ellipse position angle, for the litebird-rho orientation of
-                # the elliptical spin-2 response (PQUICK_POL_ENV_COEFF).
-                posang_rad=float(dmeta.get("posang_rad", 0.0)),
                 # Match the map-making polarisation efficiency so EE/BB are not
                 # inflated by 1/rho^2 (1.0 when use_cross_pol is off).
                 rho_pol=(

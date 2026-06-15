@@ -456,7 +456,6 @@ def build_polarized_beam_alm(
     nside: int | None = None,
     psi_uv_rad: float = 0.0,
     rho_pol: float = 1.0,
-    posang_rad: float = 0.0,
 ) -> np.ndarray:
     """Build an ideal co-polar polarised beam ``[T, E, B]`` from a scalar Planck blm.
 
@@ -493,13 +492,7 @@ def build_polarized_beam_alm(
         psi_uv_rad: Detector ``psi_uv`` (radians). The scalar T beam (``bb_T``) is
             pre-rotated by ``-psi_uv`` so that, convolved at ``psi_pxx``, its ellipse
             stays co-oriented across a horn's two PSB arms. The E/B beam keeps
-            ``psi_uv`` (supplied per-arm by the convolution as the Pxx pol axis); only
-            its *elliptical* part is re-oriented, via ``posang_rad`` below.
-        posang_rad: Beam-ellipse position angle ``POSANG`` (radians). The elliptical
-            (m>=2) part of the spin-2 beam is rotated by ``posang - psi_uv`` so its
-            orientation relative to the polarisation matches the litebird
-            ``rho = psi_pol - psi_ell`` convention; the round core and a circular
-            beam are unaffected. Without it the elliptical EE transfer droops.
+            ``psi_uv`` (supplied per-arm by the convolution as the Pxx pol axis).
 
     Returns:
         Complex128 array of shape ``(3, nalm)`` holding ``[T, E, B]`` beam alm at
@@ -519,17 +512,12 @@ def build_polarized_beam_alm(
     ell, emm = hp.Alm.getlm(lmax, np.arange(bb.size))
 
     # Apply psi_pol to set the polarisation axis (kept aligned with the map-making
-    # frame via the convolution psi). On top of that, rotate ONLY the elliptical
-    # (m>=2) part of the spin-2 beam to the correct orientation relative to the
-    # polarisation. The round (m=0) core is rotation-invariant, so this leaves the
-    # pol axis (and any circular beam) untouched. litebird beam_synthesis sets the
-    # polarised response by rho = psi_pol - psi_ell, with psi_ell the ellipse
-    # position angle (POSANG); the matching ellipse rotation here is
-    # (posang - psi_uv) (~62 deg for these horns). Without it the elliptical EE
-    # transfer droops ~10% by l=2000 while a circular beam stays flat. (If the
-    # full-sky EE transfer worsens, the relative sign of this offset is flipped.)
-    psi_ell_offset = float(posang_rad) - float(psi_uv_rad)
-    bb_pol = bb * np.exp(1j * emm * (float(psi_pol_rad) + psi_ell_offset))
+    # frame via the convolution psi). The real blm already carries the beam ellipse
+    # at its measured orientation (the m=2 phase is ~72 deg in the Dxx frame, not 0),
+    # so unlike a synthesised beam we must NOT re-rotate the ellipse here. The
+    # residual EE droop for elliptical beams (circular beams are flat) is the
+    # asymmetric-beam x scan-orientation coupling, not a beam-construction angle.
+    bb_pol = bb * np.exp(1j * emm * float(psi_pol_rad))
 
     # Synthesise the intensity beam map and build the ideal co-polar Stokes pattern.
     # The spin-2 (E/B) response is obtained by map2alm(pol=True).
