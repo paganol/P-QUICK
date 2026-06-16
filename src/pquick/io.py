@@ -464,10 +464,11 @@ def build_polarized_beam_alm(
     expressed in the local ``(e_theta, e_phi)`` basis across the beam, rotates with the
     azimuth ``phi`` — giving the spin-2 ``e^{±2i phi}`` structure.  Concretely the beam
     Stokes map is ``(I, Q, U) = B (1, cos 2(psi_pol - phi), sin 2(psi_pol - phi))`` and
-    its ``map2alm(pol=True)`` yields ``[T, E, B]``.  The scalar beam is first rotated
-    Dxx → Pxx via ``b_lm -> b_lm e^{i m psi_pol}`` so the returned beam is in the **Pxx**
-    polarisation frame (pol axis = beam x-axis); it must therefore be convolved with the
-    pointing psi in the Pxx frame (``psi_offset = 0``).
+    its ``map2alm(pol=True)`` yields ``[T, E, B]``.  The scalar beam ellipse is first
+    rotated Dxx → Pxx via ``b_lm -> b_lm e^{i m psi_uv}`` (psi_uv *is* the Dxx→Pxx
+    angle), so the returned beam is in the **Pxx** convolution frame; the polarisation
+    axis is then placed at ``psi_pol`` within Pxx by the spin-2 phase ``chi``. It must
+    be convolved with the pointing psi in the Pxx frame (``psi_offset = 0``).
 
     Validated against ``litebird_sim.beam_synthesis`` analytic Gaussian beams: the E/B
     profiles match to <0.3 % (flat in ℓ; the residual is litebird's constant
@@ -499,24 +500,24 @@ def build_polarized_beam_alm(
         while 2 * nside < lmax:
             nside *= 2
 
-    # Dxx -> Pxx frame rotation about the boresight: b_lm -> b_lm e^{i m psi_pol}
-    # (same sense as qp_planck's e^{i m (psi_uv+psi_pol)}; psi_uv is carried by the
-    # pointing quaternion, so only psi_pol remains here).
     ell, emm = hp.Alm.getlm(lmax, np.arange(bb.size))
 
-    # Apply psi_pol to set the polarisation axis (kept aligned with the map-making
-    # frame via the convolution psi). The real blm already carries the beam ellipse
-    # at its measured orientation (the m=2 phase is ~72 deg in the Dxx frame, not 0),
-    # so unlike a synthesised beam we must NOT re-rotate the ellipse here. The
-    # residual EE droop for elliptical beams (circular beams are flat) is the
-    # asymmetric-beam x scan-orientation coupling, not a beam-construction angle.
-    bb_pol = bb * np.exp(1j * emm * float(psi_pol_rad))
+    # Frame convention (qp_planck / real-space convolver): psi_uv is the angle
+    # Dxx->Pxx, psi_pol the angle Pxx->polarisation-axis. The beam ELLIPSE lives in
+    # Dxx, so it must be carried into the Pxx convolution frame by *psi_uv* -- not
+    # psi_pol, which only sets the pol axis *within* Pxx. The previous code rotated
+    # the ellipse by psi_pol (~0.2 deg) instead of psi_uv (~23-45 deg), an
+    # elliptical-only, temperature-invariant error matching the EE droop. So rotate
+    # the envelope by psi_uv and put psi_pol on the pol axis (chi) below.
+    # NB: the -psi_uv direction measured worse, so +psi_uv is used here; flip the
+    # sign on this one psi_uv_rad term if the full-sky EE transfer worsens.
+    bb_pol = bb * np.exp(1j * emm * float(psi_uv_rad))
 
     # Synthesise the intensity beam map and build the ideal co-polar Stokes pattern.
     # The spin-2 (E/B) response is obtained by map2alm(pol=True).
     beam_map = hp.alm2map(bb_pol, nside, lmax=lmax, mmax=mmax)
     phi = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))[1]
-    chi = -2.0 * phi
+    chi = -2.0 * (phi - float(psi_pol_rad))  # pol axis at psi_pol within Pxx
     iqu = np.array([beam_map, beam_map * np.cos(chi), beam_map * np.sin(chi)])
     _, e_alm, b_alm = hp.map2alm(iqu, lmax=lmax, mmax=mmax, pol=True, iter=3)
 
