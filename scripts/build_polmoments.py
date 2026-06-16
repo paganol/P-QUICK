@@ -55,6 +55,7 @@ nside 256 (the qp_planck reference).
 from __future__ import annotations
 
 import argparse
+import gc
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -252,12 +253,18 @@ def build_detector(cfg, det, quat, od_paths, nside, out_dir, chunk, use_flags, b
         _dt = time.perf_counter() - _t0
         _vlog(fbe, 2, f"    [{det}] [OD {oi}/{len(od_paths)}] {Path(npz).name} done"
                       + (f"  ({_dt:.1f}s)" if fb >= 3 else ""))
+        # The interpolator is rebuilt once per OD per detector; drop it (and its
+        # native-rate buffers) eagerly so nothing accumulates across the OD loop.
+        del interp, common_good, hflag
+        gc.collect()
 
     # Sum-reduce this detector's maps to rank 0 (no-op when serial).
     hits = _sum_reduce(comm, hits, rank)
     cos = _sum_reduce(comm, cos, rank)
     sin = _sum_reduce(comm, sin, rank)
     if rank != 0:
+        del cos, sin, hits
+        gc.collect()
         return
     coordsys = _COORDSYS.get(cfg.resampling.coordinate_system.strip().lower(), "G")
     cols = []
@@ -272,6 +279,8 @@ def build_detector(cfg, det, quat, od_paths, nside, out_dir, chunk, use_flags, b
                  column_names=["hits"], coord=coordsys, dtype=np.float64)
     nhit = int(np.count_nonzero(hits))
     _vlog(fbe, 1, f"  wrote polmoments_{det}.fits (+_hits)  hit pixels={nhit}  fsky={nhit/npix:.4f}")
+    del cos, sin, hits, cols
+    gc.collect()
 
 
 def main() -> None:
@@ -341,6 +350,7 @@ def main() -> None:
     for det in detectors:
         build_detector(cfg, det, quats[det], od_paths, nside, out_dir, int(args.chunk),
                        use_flags, bad_rings, fb, comm, rank, size)
+        gc.collect()  # reclaim this detector's maps before the next one allocates
     _vlog(fbe, 0, f"Done -> {out_dir}")
 
 
