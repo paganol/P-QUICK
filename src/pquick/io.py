@@ -508,16 +508,23 @@ def build_polarized_beam_alm(
     # psi_pol, which only sets the pol axis *within* Pxx. The previous code rotated
     # the ellipse by psi_pol (~0.2 deg) instead of psi_uv (~23-45 deg), an
     # elliptical-only, temperature-invariant error matching the EE droop. So rotate
-    # the envelope by psi_uv and put psi_pol on the pol axis (chi) below.
+    # the envelope by psi_uv here.
     # NB: the -psi_uv direction measured worse, so +psi_uv is used here; flip the
     # sign on this one psi_uv_rad term if the full-sky EE transfer worsens.
     bb_pol = bb * np.exp(1j * emm * float(psi_uv_rad))
 
     # Synthesise the intensity beam map and build the ideal co-polar Stokes pattern.
     # The spin-2 (E/B) response is obtained by map2alm(pol=True).
+    # The beam's polarisation axis must share the frame the solve reads it in: the
+    # convolution and map-making both use psi_buf = the Pxx angle (det quat is built
+    # from psi_uv only, psi_conv_offset = 0), so the pol axis is at the Pxx x-axis
+    # (chi = -2*phi). Putting it at psi_pol here instead would mismatch the solve by
+    # psi_pol and leak E -> B at ~sin(2 psi_pol). psi_pol (Pxx->pol axis, ~0.2-0.8
+    # deg) is therefore not applied to the beam; if it ever matters it must be added
+    # to the map-making psi too, not to the beam alone.
     beam_map = hp.alm2map(bb_pol, nside, lmax=lmax, mmax=mmax)
     phi = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))[1]
-    chi = -2.0 * (phi - float(psi_pol_rad))  # pol axis at psi_pol within Pxx
+    chi = -2.0 * phi
     iqu = np.array([beam_map, beam_map * np.cos(chi), beam_map * np.sin(chi)])
     _, e_alm, b_alm = hp.map2alm(iqu, lmax=lmax, mmax=mmax, pol=True, iter=3)
 
