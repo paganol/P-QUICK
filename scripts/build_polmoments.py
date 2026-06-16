@@ -27,14 +27,14 @@ back to the configs/default.yaml layout. The YAML structure is::
 
 CLI flags: --rimo_file --pointings --flags --bad_rings_file --mission_length
            --channel | --detectors  --coordinate_system  --nside  --output_dir
-(`--channel` and `--mission_length` accept comma-separated lists for batch builds.)
+(`--channel` accepts a comma-separated list; `--mission_length` is a single value.)
 
     # from a YAML (inputs + selection + output all inside)
     python scripts/build_polmoments.py --config configs/polmoments_full_100ghz.yaml
 
-    # pure CLI (default.yaml input paths), several channels and missions
+    # pure CLI (default.yaml input paths), one or more channels
     python scripts/build_polmoments.py --channel 100ghz,143ghz \
-        --mission_length "survey 1,survey 2,full" --nside 256 --output_dir out/pm
+        --mission_length full --nside 256 --output_dir out/pm
 
     # YAML for inputs, CLI to override the output nside/dir
     python scripts/build_polmoments.py --config configs/polmoments_full_100ghz.yaml \
@@ -44,12 +44,13 @@ psi is the same per-sample orientation the map-making uses (`bore_det_to_angles`
 the same flags the pipeline applies (common + bad-ring + per-horn) are honoured so the
 hit counts line up with the maps.
 
-**MPI**: ODs are partitioned round-robin across ranks and the per-detector maps are
-sum-reduced to rank 0, which writes the files — so a full-mission build scales ~linearly
-with ranks. Run e.g. ``srun -n 64 python scripts/build_polmoments.py ...`` (or
-``mpirun -n 64 ...``); without MPI it runs serially. Each rank holds the full
-accumulators (per detector: 13 maps), so keep nside at the qp_planck reference (256,
-~0.7 GB for the 8 100GHz detectors) rather than 2048.
+**MPI**: detectors are processed one at a time (outer loop); for each, the ODs are
+partitioned round-robin across ranks and its maps are sum-reduced to rank 0, which
+writes the files — so a full-mission build scales ~linearly with ranks. Run e.g.
+``srun -n 64 python scripts/build_polmoments.py ...`` (or ``mpirun -n 64 ...``); without
+MPI it runs serially. Only one detector's 13 maps are resident per rank, so the
+footprint is independent of the detector count: ~4.9 GB at nside 2048, ~0.08 GB at
+nside 256 (the qp_planck reference).
 """
 from __future__ import annotations
 
@@ -192,93 +193,76 @@ def _resolve_detectors(args: argparse.Namespace, cfg, all_dets: list[str]) -> li
     return sel
 
 
-def build_mission(cfg, detectors, quats, mission, nside, out_dir, chunk, use_flags,
-                  fb=DEFAULT_FEEDBACK, comm=None, rank=0, size=1):
-    """Accumulate and write per-detector polmoments for one mission length.
+def build_detector(cfg, det, quat, od_paths, nside, out_dir, chunk, use_flags, bad_rings,
+                   fb=DEFAULT_FEEDBACK, comm=None, rank=0, size=1):
+    """Accumulate and write polmoments for ONE detector.
 
     ODs are partitioned round-robin across MPI ranks; each rank accumulates its
-    subset, the per-detector maps are sum-reduced to rank 0, which writes them.
+    subset, the maps are sum-reduced to rank 0, which writes them. Only this one
+    detector's 13 maps are in memory at a time, so the footprint is independent of
+    the number of detectors (~4.9 GB at nside 2048, ~0.08 GB at nside 256).
     """
     npix = hp.nside2npix(nside)
     fbe = fb if rank == 0 else -1  # only rank 0 prints
-    od_start, od_end = parse_mission_length(mission)
-    od_paths = build_pointing_file_paths(cfg.inputs.pointings, od_start, od_end)
-    bad_rings = (
-        _load_bad_ring_intervals(cfg.inputs.bad_rings_file)
-        if (cfg.inputs.bad_rings_file is not None and use_flags)
-        else None
-    )
-    my_ods = len(_local_slice(od_paths, rank, size))
-    _vlog(fbe, 1, f"[mission '{mission}']  ODs {od_start}..{od_end} ({len(od_paths)}, "
-                  f"{my_ods}/rank over {size} rank(s))  nside={nside}  -> {out_dir}")
-
-    cos_acc = {d: np.zeros((KMAX, npix)) for d in detectors}
-    sin_acc = {d: np.zeros((KMAX, npix)) for d in detectors}
-    hit_acc = {d: np.zeros(npix) for d in detectors}
+    horn = _det_to_horn(det)
+    ch = _detector_channel_ghz(det)
+    cos = np.zeros((KMAX, npix))
+    sin = np.zeros((KMAX, npix))
+    hits = np.zeros(npix)
 
     for oi, npz in enumerate(od_paths, 1):
         if (oi - 1) % size != rank:  # round-robin partition of ODs across ranks
             continue
         _t0 = time.perf_counter()
         if not Path(npz).exists():
-            _vlog(fbe, 1, f"    [OD {oi}/{len(od_paths)}] MISSING {Path(npz).name} (skip)")
+            _vlog(fbe, 1, f"    [{det}] [OD {oi}/{len(od_paths)}] MISSING {Path(npz).name} (skip)")
             continue
         interp = build_pointing_interpolator(load_pointing_npz(npz), coordinate_system=cfg.resampling.coordinate_system)
         n = interp.n_native
         common_good = interp.flag_native == 0
-        od = extract_od_from_pointing_filename(npz)
-        horn_flag: dict[str, np.ndarray] = {}
+        hflag = None
         if use_flags:
-            for d in detectors:
-                horn = _det_to_horn(d)
-                if horn in horn_flag:
-                    continue
-                ch = _detector_channel_ghz(d)
-                fp = Path(f"{cfg.inputs.flags}{ch:03d}ghz_od_{od:04d}.npz")
-                horn_flag[horn] = load_horn_flag_npz(fp, horn, n_samples=n) if fp.exists() else np.zeros(n, np.int8)
+            od = extract_od_from_pointing_filename(npz)
+            fp = Path(f"{cfg.inputs.flags}{ch:03d}ghz_od_{od:04d}.npz")
+            hflag = load_horn_flag_npz(fp, horn, n_samples=n) if fp.exists() else np.zeros(n, np.int8)
 
         for s in range(0, n, chunk):
             e = min(s + chunk, n)
-            q_bore = interp.get_boresight_quaternions(s, e - s)
-            cg = common_good[s:e]
-            for d in detectors:
-                good = cg.copy()
-                if use_flags:
-                    good &= horn_flag[_det_to_horn(d)][s:e] == 0
-                    if bad_rings is not None:
-                        good &= ~_chunk_bad_ring_mask(bad_rings, d, interp.coarse_t0_ns, interp.native_rate_hz, s, e - s)
-                if not np.any(good):
-                    continue
-                _theta, _phi, psi = bore_det_to_angles(q_bore[good], quats[d])
-                pix = hp.ang2pix(nside, _theta, _phi).astype(np.int64)  # RING
-                hit_acc[d] += np.bincount(pix, minlength=npix)
-                for k in range(1, KMAX + 1):
-                    cos_acc[d][k - 1] += np.bincount(pix, weights=np.cos(k * psi), minlength=npix)
-                    sin_acc[d][k - 1] += np.bincount(pix, weights=np.sin(k * psi), minlength=npix)
+            good = common_good[s:e].copy()
+            if use_flags:
+                good &= hflag[s:e] == 0
+                if bad_rings is not None:
+                    good &= ~_chunk_bad_ring_mask(bad_rings, det, interp.coarse_t0_ns, interp.native_rate_hz, s, e - s)
+            if not np.any(good):
+                continue
+            q_bore = interp.get_boresight_quaternions(s, e - s)[good]
+            _theta, _phi, psi = bore_det_to_angles(q_bore, quat)
+            pix = hp.ang2pix(nside, _theta, _phi).astype(np.int64)  # RING
+            hits += np.bincount(pix, minlength=npix)
+            for k in range(1, KMAX + 1):
+                cos[k - 1] += np.bincount(pix, weights=np.cos(k * psi), minlength=npix)
+                sin[k - 1] += np.bincount(pix, weights=np.sin(k * psi), minlength=npix)
         _dt = time.perf_counter() - _t0
-        _vlog(fbe, 2, f"    [OD {oi}/{len(od_paths)}] {Path(npz).name} done"
+        _vlog(fbe, 2, f"    [{det}] [OD {oi}/{len(od_paths)}] {Path(npz).name} done"
                       + (f"  ({_dt:.1f}s)" if fb >= 3 else ""))
 
-    # Sum-reduce each per-detector map to rank 0 (no-op when serial).
-    for d in detectors:
-        hit_acc[d] = _sum_reduce(comm, hit_acc[d], rank)
-        cos_acc[d] = _sum_reduce(comm, cos_acc[d], rank)
-        sin_acc[d] = _sum_reduce(comm, sin_acc[d], rank)
+    # Sum-reduce this detector's maps to rank 0 (no-op when serial).
+    hits = _sum_reduce(comm, hits, rank)
+    cos = _sum_reduce(comm, cos, rank)
+    sin = _sum_reduce(comm, sin, rank)
     if rank != 0:
         return
-    out_dir.mkdir(parents=True, exist_ok=True)
+    cols = []
+    for k in range(KMAX):
+        cols.append(cos[k])
+        cols.append(sin[k])
     names = [f"COLUMN_{i+1}" for i in range(2 * KMAX)]
-    for d in detectors:
-        cols = []
-        for k in range(KMAX):
-            cols.append(cos_acc[d][k])
-            cols.append(sin_acc[d][k])
-        hp.write_map(str(out_dir / f"polmoments_{d}.fits"), cols, nest=False, overwrite=True,
-                     column_names=names, dtype=[np.float64] * (2 * KMAX))
-        hp.write_map(str(out_dir / f"polmoments_{d}_hits.fits"), hit_acc[d], nest=False, overwrite=True,
-                     column_names=["T"], dtype=np.float64)
-        nhit = int(np.count_nonzero(hit_acc[d]))
-        _vlog(fb, 1, f"    wrote polmoments_{d}.fits (+_hits)  hit pixels={nhit}  fsky={nhit/npix:.4f}")
+    hp.write_map(str(out_dir / f"polmoments_{det}.fits"), cols, nest=False, overwrite=True,
+                 column_names=names, dtype=[np.float64] * (2 * KMAX))
+    hp.write_map(str(out_dir / f"polmoments_{det}_hits.fits"), hits, nest=False, overwrite=True,
+                 column_names=["T"], dtype=np.float64)
+    nhit = int(np.count_nonzero(hits))
+    _vlog(fbe, 1, f"  wrote polmoments_{det}.fits (+_hits)  hit pixels={nhit}  fsky={nhit/npix:.4f}")
 
 
 def main() -> None:
@@ -293,7 +277,7 @@ def main() -> None:
     p.add_argument("--flags", type=str, default=None, help="Flag file prefix (default: inputs/flags/flags_).")
     p.add_argument("--bad_rings_file", type=str, default=None, help="Bad-ring intervals file (default: none).")
     p.add_argument("--mission_length", type=str, default=None,
-                   help="Mission length(s); comma-separated builds one set each, e.g. 'survey 1,full'.")
+                   help="Mission length, e.g. 'full' or 'survey 1' (single value).")
     # detector_selection.*
     p.add_argument("--channel", type=str, default=None, help="Channel(s), comma-separated, e.g. '100ghz,143ghz'.")
     p.add_argument("--detectors", type=str, default=None, help="Detector names, comma-separated (overrides --channel).")
@@ -301,7 +285,7 @@ def main() -> None:
     p.add_argument("--coordinate_system", type=str, default=None, help="Sky frame (default: galactic).")
     # output.*
     p.add_argument("--nside", type=int, default=None, help="Output nside (default: 256).")
-    p.add_argument("--output_dir", type=str, default=None, help="Base output dir (one sub-dir per mission if >1).")
+    p.add_argument("--output_dir", type=str, default=None, help="Output directory for the polmoments files.")
     # utility
     p.add_argument("--feedback", type=int, default=None, choices=range(0, 4), metavar="0-3",
                    help="Verbosity: 0 quiet, 1 normal (default), 2 per-OD, 3 +timing. "
@@ -322,21 +306,33 @@ def main() -> None:
         d: normalize_quaternion(np.asarray(det_meta[d].get("quat", np.array([0.0, 0.0, 0.0, 1.0])), dtype=np.float64))
         for d in detectors
     }
-    missions = [m.strip() for m in (cfg.inputs.mission_length or "full").split(",") if m.strip()]
+    mission = cfg.inputs.mission_length or "full"
     use_flags = (cfg.inputs.flags is not None) and (not args.no_flags)
-    out_base = Path(cfg.output.output_dir)
+    out_dir = Path(cfg.output.output_dir)
+    nside = int(cfg.output.nside)
     comm, rank, size = _get_mpi()
     fb = cfg.feedback
     fbe = fb if rank == 0 else -1  # only rank 0 prints
-    _vlog(fbe, 1, f"detectors ({len(detectors)}): {detectors}")
-    _vlog(fbe, 1, f"missions: {missions}  nside={cfg.output.nside}  coord={cfg.resampling.coordinate_system}"
-                  f"  flags={use_flags}  mpi_ranks={size}")
 
-    for mission in missions:
-        sub = out_base / mission.replace(" ", "_") if len(missions) > 1 else out_base
-        build_mission(cfg, detectors, quats, mission, int(cfg.output.nside), sub, int(args.chunk),
-                      use_flags, fb, comm, rank, size)
-    _vlog(fbe, 0, f"Done -> {out_base}")
+    od_start, od_end = parse_mission_length(mission)
+    od_paths = build_pointing_file_paths(cfg.inputs.pointings, od_start, od_end)
+    bad_rings = (
+        _load_bad_ring_intervals(cfg.inputs.bad_rings_file)
+        if (cfg.inputs.bad_rings_file is not None and use_flags)
+        else None
+    )
+    if rank == 0:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    _vlog(fbe, 1, f"detectors ({len(detectors)}): {detectors}")
+    _vlog(fbe, 1, f"mission '{mission}'  ODs {od_start}..{od_end} ({len(od_paths)}, "
+                  f"{len(_local_slice(od_paths, rank, size))}/rank over {size} rank(s))  "
+                  f"nside={nside}  coord={cfg.resampling.coordinate_system}  flags={use_flags}  -> {out_dir}")
+
+    # Detector-outer / OD-parallel: only one detector's maps are resident at a time.
+    for det in detectors:
+        build_detector(cfg, det, quats[det], od_paths, nside, out_dir, int(args.chunk),
+                       use_flags, bad_rings, fb, comm, rank, size)
+    _vlog(fbe, 0, f"Done -> {out_dir}")
 
 
 if __name__ == "__main__":
