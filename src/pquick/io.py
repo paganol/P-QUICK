@@ -508,10 +508,11 @@ def build_polarized_beam_alm(
     e_alm = e_alm * float(rho_pol)
     b_alm = b_alm * float(rho_pol)
 
-    # T component: scalar beam with psi_uv removed (psi_pol - psi_uv) so its ellipse
-    # stays co-oriented across a horn's two PSB arms when convolved at psi_buf. Taken
-    # from the input alm directly, so it is exact (no pixelisation).
-    bb_T = bb * np.exp(1j * emm * (float(psi_pol_rad) - float(psi_uv_rad)))
+    # T component: same Dxx->Pxx rotation (psi_uv) as the E/B ellipse above -- this is
+    # what co-orients a horn's two PSB arms (their Dxx frames are ~90 deg apart) in the
+    # common Pxx frame. Taken from the input alm directly, so it is exact (no
+    # pixelisation).
+    bb_T = bb * np.exp(1j * emm * float(psi_uv_rad))
     return np.ascontiguousarray(np.array([bb_T, e_alm, b_alm], dtype=np.complex128))
 
 

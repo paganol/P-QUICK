@@ -457,18 +457,17 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 #                     (offset 0)
                 #   intensity-only -> scalar beam is Dxx, convolve at psi_dxx
                 #                     (offset psi_pol)
-                # Beam-shape co-orientation across a horn's PSB arms (remove psi_uv),
-                # while keeping psi_uv in the map-making psi_buf for polarisation.
-                #   polarized_beam: convolve at psi_pxx = psi_buf (offset 0) so E/B
-                #     and map-making share the polarisation frame; the T component
-                #     was pre-rotated by -psi_uv in build_polarized_beam_alm to keep
-                #     the intensity shape co-oriented.
-                #   intensity-only: scalar Dxx beam, co-orient by removing psi_uv
-                #     from the convolution psi directly (no polarisation to preserve).
+                # Carry the beam ellipse Dxx -> Pxx (psi_uv) so a horn's two PSB arms
+                # co-orient in the common Pxx frame.
+                #   polarized_beam: the [T,E,B] beam is already rotated to Pxx in
+                #     build_polarized_beam_alm, so convolve at psi_pxx = psi_buf
+                #     (offset 0); map-making shares that frame.
+                #   intensity-only: the scalar beam is still in Dxx, so apply the
+                #     Dxx -> Pxx rotation (psi_uv) as the convolution offset.
                 if config.convolution.polarized_beam:
                     psi_conv_offset = 0.0
                 else:
-                    psi_conv_offset = psi_pol_rad - psi_uv_rad
+                    psi_conv_offset = psi_uv_rad
                 # Diagnostic: constant beam-orientation offset on the convolution psi
                 # only (not map-making). Sweep convolution.extra_psi_deg to find the
                 # value that flattens an asymmetric-beam transfer-function ratio.
