@@ -237,6 +237,10 @@ def build_detector(cfg, det, quat, od_paths, nside, out_dir, chunk, use_flags, b
                 continue
             q_bore = interp.get_boresight_quaternions(s, e - s)[good]
             _theta, _phi, psi = bore_det_to_angles(q_bore, quat)
+            # qp_planck's orientation convention is offset by pi from P-QUICK's
+            # bore_det_to_angles psi. This is invisible to the even (polarised) moments
+            # but flips the odd ones; add pi so all k match qp_planck's polmoments.
+            psi = psi + np.pi
             pix = hp.ang2pix(nside, _theta, _phi).astype(np.int64)  # RING
             hits += np.bincount(pix, minlength=npix)
             for k in range(1, KMAX + 1):
@@ -253,14 +257,15 @@ def build_detector(cfg, det, quat, od_paths, nside, out_dir, chunk, use_flags, b
     if rank != 0:
         return
     cols = []
+    names = []
     for k in range(KMAX):
         cols.append(cos[k])
         cols.append(sin[k])
-    names = [f"COLUMN_{i+1}" for i in range(2 * KMAX)]
+        names += [f"SUM_COS_{k+1}_PSI", f"SUM_SIN_{k+1}_PSI"]  # toast_planck.polmoments names
     hp.write_map(str(out_dir / f"polmoments_{det}.fits"), cols, nest=False, overwrite=True,
-                 column_names=names, dtype=[np.float64] * (2 * KMAX))
+                 column_names=names, coord="G", dtype=[np.float64] * (2 * KMAX))
     hp.write_map(str(out_dir / f"polmoments_{det}_hits.fits"), hits, nest=False, overwrite=True,
-                 column_names=["T"], dtype=np.float64)
+                 column_names=["hits"], coord="G", dtype=np.float64)
     nhit = int(np.count_nonzero(hits))
     _vlog(fbe, 1, f"  wrote polmoments_{det}.fits (+_hits)  hit pixels={nhit}  fsky={nhit/npix:.4f}")
 
