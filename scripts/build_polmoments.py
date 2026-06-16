@@ -113,6 +113,9 @@ DEFAULT_INPUTS = SimpleNamespace(
 DEFAULT_COORD = "galactic"
 DEFAULT_NSIDE = 256
 
+# coordinate_system -> FITS COORDSYS letter (matches build_pointing_interpolator frames).
+_COORDSYS = {"galactic": "G", "ecliptic": "E", "equatorial": "C", "celestial": "C"}
+
 
 def _build_cfg(args: argparse.Namespace):
     """Assemble the (inputs, resampling, detector_selection, output) the builder needs.
@@ -256,6 +259,7 @@ def build_detector(cfg, det, quat, od_paths, nside, out_dir, chunk, use_flags, b
     sin = _sum_reduce(comm, sin, rank)
     if rank != 0:
         return
+    coordsys = _COORDSYS.get(cfg.resampling.coordinate_system.strip().lower(), "G")
     cols = []
     names = []
     for k in range(KMAX):
@@ -263,9 +267,9 @@ def build_detector(cfg, det, quat, od_paths, nside, out_dir, chunk, use_flags, b
         cols.append(sin[k])
         names += [f"SUM_COS_{k+1}_PSI", f"SUM_SIN_{k+1}_PSI"]  # toast_planck.polmoments names
     hp.write_map(str(out_dir / f"polmoments_{det}.fits"), cols, nest=False, overwrite=True,
-                 column_names=names, coord="G", dtype=[np.float64] * (2 * KMAX))
+                 column_names=names, coord=coordsys, dtype=[np.float64] * (2 * KMAX))
     hp.write_map(str(out_dir / f"polmoments_{det}_hits.fits"), hits, nest=False, overwrite=True,
-                 column_names=["hits"], coord="G", dtype=np.float64)
+                 column_names=["hits"], coord=coordsys, dtype=np.float64)
     nhit = int(np.count_nonzero(hits))
     _vlog(fbe, 1, f"  wrote polmoments_{det}.fits (+_hits)  hit pixels={nhit}  fsky={nhit/npix:.4f}")
 
