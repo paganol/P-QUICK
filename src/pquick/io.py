@@ -452,45 +452,33 @@ def build_polarized_beam_alm(
 ) -> np.ndarray:
     """Build an ideal co-polar polarised beam ``[T, E, B]`` from a scalar Planck blm.
 
-    Planck ``blm_*`` files store only the **scalar (spin-0) intensity** beam, measured
-    on planets, in the **Dxx** (beam-geometric) frame.  ducc0 total-convolution needs a
-    3-component ``[T, E, B]`` beam where the E/B components are the **spin-2** polarised
-    response — *not* a copy of the spin-0 beam.  Copying the intensity alm into the E/B
-    slots (e.g. ``np.repeat``) injects a mis-normalised polarisation response that leaks
-    E into the T solve and produces an oscillating transfer function.
+    Planck ``blm_*`` files store only the scalar (spin-0) intensity beam, in the Dxx
+    (beam-geometric) frame. ducc0 total-convolution needs a 3-component ``[T, E, B]``
+    beam whose E/B are the spin-2 polarised response. For an ideal polarisation-
+    sensitive detector that response is the same intensity pattern modulated by the
+    spin-2 phase: ``(I, Q, U) = B (1, cos chi, sin chi)`` with ``chi = -2 phi``, whose
+    ``map2alm(pol=True)`` gives ``[T, E, B]``.
 
-    For an ideal polarisation-sensitive detector the polarised beam is the **same**
-    intensity pattern, but the detector's fixed focal-plane polarisation direction, when
-    expressed in the local ``(e_theta, e_phi)`` basis across the beam, rotates with the
-    azimuth ``phi`` — giving the spin-2 ``e^{±2i phi}`` structure.  Concretely the beam
-    Stokes map is ``(I, Q, U) = B (1, cos 2(psi_pol - phi), sin 2(psi_pol - phi))`` and
-    its ``map2alm(pol=True)`` yields ``[T, E, B]``.  The scalar beam ellipse is first
-    rotated Dxx → Pxx via ``b_lm -> b_lm e^{i m psi_uv}`` (psi_uv *is* the Dxx→Pxx
-    angle), so the returned beam is in the **Pxx** convolution frame; the polarisation
-    axis is then placed at ``psi_pol`` within Pxx by the spin-2 phase ``chi``. It must
-    be convolved with the pointing psi in the Pxx frame (``psi_offset = 0``).
-
-    Validated against ``litebird_sim.beam_synthesis`` analytic Gaussian beams: the E/B
-    profiles match to <0.3 % (flat in ℓ; the residual is litebird's constant
-    ``exp(2 sigma^2)`` approximation vs the exact spin-2 transform used here).
+    Frames: ``psi_uv`` is the Dxx->Pxx angle, ``psi_pol`` the Pxx->polarisation-axis
+    angle. The beam ellipse lives in Dxx and is carried into the Pxx convolution frame
+    by ``psi_uv``; the polarisation axis is left at the Pxx x-axis, matching the
+    convolution and map-making, which both read polarisation at the Pxx pointing angle
+    ``psi_buf``. Convolve the returned beam at ``psi_pxx = psi_buf`` (``psi_offset=0``).
 
     Args:
-        beam_alm_scalar: Scalar intensity beam, shape ``(1, nalm)`` or ``(nalm,)``,
-            healpy m-major order at ``(lmax, mmax)``, in the Dxx frame.
-        psi_pol_rad: Detector polarisation angle ``psi_pol`` (radians) relative to the
-            Dxx beam x-axis.
+        beam_alm_scalar: Scalar intensity beam ``(1, nalm)`` or ``(nalm,)``, healpy
+            m-major at ``(lmax, mmax)``, in the Dxx frame.
+        psi_pol_rad: Detector polarisation angle ``psi_pol`` (radians).
         lmax: Maximum multipole of the beam alm.
-        mmax: Maximum azimuthal order to retain in the output beam.
-        nside: HEALPix resolution for the intermediate map; defaults to the smallest
-            power of two with ``2 * nside >= lmax``.
-        psi_uv_rad: Detector ``psi_uv`` (radians). The scalar T beam (``bb_T``) is
-            pre-rotated by ``-psi_uv`` so that, convolved at ``psi_pxx``, its ellipse
-            stays co-oriented across a horn's two PSB arms. The E/B beam keeps
-            ``psi_uv`` (supplied per-arm by the convolution as the Pxx pol axis).
+        mmax: Maximum azimuthal order retained in the output beam.
+        nside: HEALPix resolution for the intermediate map; default smallest power of
+            two with ``2 * nside >= lmax``.
+        psi_uv_rad: Detector ``psi_uv`` (radians) = the Dxx->Pxx rotation.
+        rho_pol: Polarisation efficiency; scales E/B to match the rho-weighted solve.
 
     Returns:
-        Complex128 array of shape ``(3, nalm)`` holding ``[T, E, B]`` beam alm at
-        ``(lmax, mmax)``, in the Pxx frame. Convolve at ``psi_pxx = psi_buf``.
+        Complex128 ``(3, nalm)`` ``[T, E, B]`` beam alm at ``(lmax, mmax)``, in the
+        Pxx frame. Convolve at ``psi_pxx = psi_buf``.
     """
     bb = beam_alm_scalar[0] if np.ndim(beam_alm_scalar) == 2 else np.asarray(beam_alm_scalar)
     bb = np.ascontiguousarray(bb, dtype=np.complex128)
@@ -502,46 +490,27 @@ def build_polarized_beam_alm(
 
     ell, emm = hp.Alm.getlm(lmax, np.arange(bb.size))
 
-    # Frame convention (qp_planck / real-space convolver): psi_uv is the angle
-    # Dxx->Pxx, psi_pol the angle Pxx->polarisation-axis. The beam ELLIPSE lives in
-    # Dxx, so it must be carried into the Pxx convolution frame by *psi_uv* -- not
-    # psi_pol, which only sets the pol axis *within* Pxx. The previous code rotated
-    # the ellipse by psi_pol (~0.2 deg) instead of psi_uv (~23-45 deg), an
-    # elliptical-only, temperature-invariant error matching the EE droop. So rotate
-    # the envelope by psi_uv here.
-    # NB: the -psi_uv direction measured worse, so +psi_uv is used here; flip the
-    # sign on this one psi_uv_rad term if the full-sky EE transfer worsens.
+    # Carry the beam ellipse from Dxx into the Pxx convolution frame (psi_uv = Dxx->Pxx).
     bb_pol = bb * np.exp(1j * emm * float(psi_uv_rad))
 
-    # Synthesise the intensity beam map and build the ideal co-polar Stokes pattern.
-    # The spin-2 (E/B) response is obtained by map2alm(pol=True).
-    # The beam's polarisation axis must share the frame the solve reads it in: the
-    # convolution and map-making both use psi_buf = the Pxx angle (det quat is built
-    # from psi_uv only, psi_conv_offset = 0), so the pol axis is at the Pxx x-axis
-    # (chi = -2*phi). Putting it at psi_pol here instead would mismatch the solve by
-    # psi_pol and leak E -> B at ~sin(2 psi_pol). psi_pol (Pxx->pol axis, ~0.2-0.8
-    # deg) is therefore not applied to the beam; if it ever matters it must be added
-    # to the map-making psi too, not to the beam alone.
+    # Ideal co-polar Stokes pattern; the spin-2 E/B follow from map2alm(pol=True). The
+    # pol axis is left at the Pxx x-axis (chi = -2 phi) so it matches the frame the
+    # convolution and map-making read it in (psi_buf, psi_conv_offset = 0). psi_pol is
+    # not applied to the beam alone -- doing so would mismatch the solve and leak E->B.
     beam_map = hp.alm2map(bb_pol, nside, lmax=lmax, mmax=mmax)
     phi = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))[1]
     chi = -2.0 * phi
     iqu = np.array([beam_map, beam_map * np.cos(chi), beam_map * np.sin(chi)])
     _, e_alm, b_alm = hp.map2alm(iqu, lmax=lmax, mmax=mmax, pol=True, iter=3)
 
-    # Polarisation efficiency: scale the E/B (polarised) response by rho so the
-    # simulated TOD matches the rho-weighted map-making (map.use_cross_pol). Without
-    # this the ideal (rho=1) beam over-drives the rho-weighted solve and EE/BB come
-    # out inflated by 1/rho^2. qp_planck carries rho in both beam and hit matrix.
+    # Polarisation efficiency: scale E/B by rho to match the rho-weighted map-making
+    # (map.use_cross_pol); otherwise EE/BB come out inflated by 1/rho^2.
     e_alm = e_alm * float(rho_pol)
     b_alm = b_alm * float(rho_pol)
 
-    # The whole beam is convolved at the Pxx polarisation angle psi_pxx = psi_buf
-    # (so E/B and map-making share the same polarisation frame). But the *intensity*
-    # beam shape must stay co-oriented across a horn's two PSB arms (psi_uv removed),
-    # otherwise their identical ellipses land 90 deg apart and cancel. So pre-rotate
-    # only the T component by -psi_uv: convolved at psi_pxx its shape lands at the
-    # boresight (psi_uv-free) frame, while E/B keep the polarisation axis at psi_pxx.
-    # T is taken from the (rotated) input alm so it is exact (no pixelisation).
+    # T component: scalar beam with psi_uv removed (psi_pol - psi_uv) so its ellipse
+    # stays co-oriented across a horn's two PSB arms when convolved at psi_buf. Taken
+    # from the input alm directly, so it is exact (no pixelisation).
     bb_T = bb * np.exp(1j * emm * (float(psi_pol_rad) - float(psi_uv_rad)))
     return np.ascontiguousarray(np.array([bb_T, e_alm, b_alm], dtype=np.complex128))
 
