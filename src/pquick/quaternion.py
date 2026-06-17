@@ -4,6 +4,7 @@ import math
 
 import numpy as np
 from numba import njit as _njit
+from numba import prange as _prange
 
 
 def normalize_quaternion(q: np.ndarray, eps: float = 1e-15) -> np.ndarray:
@@ -45,6 +46,45 @@ def quat_mul(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
         ],
         axis=-1,
     )
+
+
+@_njit(fastmath=True, cache=True, parallel=True)
+def _frame_rotate_normalize_jit(
+    q1: np.ndarray,
+    q2: np.ndarray,
+    out: np.ndarray,
+) -> None:
+    """Hamilton product of constant left quaternion *q1* ``(4,)`` with each row of *q2*
+    ``(N, 4)``, normalised, written into *out* ``(N, 4)``. One parallel pass replacing the
+    vectorised ``normalize_quaternion(quat_mul(frame, q))`` (which builds several N×4
+    temporaries). Rows are independent, so the loop runs over ``numba.prange``."""
+    x1 = q1[0]; y1 = q1[1]; z1 = q1[2]; w1 = q1[3]
+    for i in _prange(q2.shape[0]):
+        x2 = q2[i, 0]; y2 = q2[i, 1]; z2 = q2[i, 2]; w2 = q2[i, 3]
+        rx = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+        ry = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+        rz = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+        rw = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+        nrm = math.sqrt(rx * rx + ry * ry + rz * rz + rw * rw)
+        if nrm < 1e-15:
+            nrm = 1e-15
+        inv = 1.0 / nrm
+        out[i, 0] = rx * inv; out[i, 1] = ry * inv
+        out[i, 2] = rz * inv; out[i, 3] = rw * inv
+
+
+def frame_rotate_normalize(frame_quat: np.ndarray, q: np.ndarray) -> np.ndarray:
+    """Apply a constant left quaternion rotation to a batch and normalise, in parallel.
+
+    Equivalent to ``normalize_quaternion(quat_mul(frame_quat, q))`` for ``frame_quat``
+    of shape ``(4,)`` and ``q`` of shape ``(N, 4)``, but fused into a single
+    thread-parallel pass (uses the count from ``numba.set_num_threads``).
+    """
+    frame_quat = np.ascontiguousarray(frame_quat, dtype=np.float64)
+    q = np.ascontiguousarray(q, dtype=np.float64)
+    out = np.empty_like(q)
+    _frame_rotate_normalize_jit(frame_quat, q, out)
+    return out
 
 
 def quat_conj(q: np.ndarray) -> np.ndarray:
@@ -251,7 +291,7 @@ def bore_det_to_angles(
 # pre-allocated (N, 3) ptg buffer and psi into a separate (N,) buffer.
 # ---------------------------------------------------------------------------
 
-@_njit(fastmath=True, cache=True)
+@_njit(fastmath=True, cache=True, parallel=True)
 def _bore_det_to_ptg_jit(
     q_bore: np.ndarray,
     det_quat: np.ndarray,
@@ -261,10 +301,13 @@ def _bore_det_to_ptg_jit(
     """Fused quat-product + angles, writing into pre-allocated output buffers.
 
     ``ptg[:, 0] = theta``, ``ptg[:, 1] = phi``, ``ptg[:, 2] = psi``.
+
+    Each sample is independent (writes distinct output rows), so the loop runs over
+    ``numba.prange`` and uses the thread count set via ``numba.set_num_threads``.
     """
     dx = det_quat[0]; dy = det_quat[1]; dz = det_quat[2]; dw = det_quat[3]
     TWO_PI = 2.0 * math.pi
-    for i in range(q_bore.shape[0]):
+    for i in _prange(q_bore.shape[0]):
         qx0 = q_bore[i, 0]; qy0 = q_bore[i, 1]
         qz0 = q_bore[i, 2]; qw0 = q_bore[i, 3]
 

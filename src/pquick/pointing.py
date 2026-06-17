@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .quaternion import normalize_quaternion, quat_mul
+from .quaternion import frame_rotate_normalize, normalize_quaternion, quat_mul
 
 
 @dataclass
@@ -86,7 +86,7 @@ class PointingInterpolator:
             ),
             dtype=np.float64,
         )
-        return normalize_quaternion(quat_mul(self.frame_rotation, q))
+        return frame_rotate_normalize(self.frame_rotation, q)
 
     def get_boresight_quaternions(self, start: int, count: int) -> np.ndarray:
         """Return frame-rotated boresight quaternions for a chunk of native samples.
@@ -116,7 +116,7 @@ class PointingInterpolator:
             ),
             dtype=np.float64,
         )
-        return normalize_quaternion(quat_mul(self.frame_rotation, q))
+        return frame_rotate_normalize(self.frame_rotation, q)
 
 
 def _rotation_matrix_to_quaternion(rotation: np.ndarray) -> np.ndarray:

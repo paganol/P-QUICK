@@ -2,9 +2,42 @@ from __future__ import annotations
 
 import numpy as np
 from ducc0.healpix import Healpix_Base
+from numba import njit as _njit
 
 # Standard HEALPix sentinel for unobserved pixels (same value used by healpy).
 _UNSEEN: float = -1.6375e30
+
+
+@_njit(fastmath=True, cache=True)
+def _accumulate_tqu_jit(
+    matrix: np.ndarray,
+    pix: np.ndarray,
+    ac2: np.ndarray,
+    as2: np.ndarray,
+    w: float,
+    wy: np.ndarray,
+) -> None:
+    """Single-pass scatter-accumulate of the 9 normal-equation entries per sample.
+
+    Replaces ten separate ``np.add.at`` scatter passes (each re-reading ``pix``) with
+    one fused loop, reading ``pix`` once per sample. ``ac2``/``as2`` already carry the
+    polarisation efficiency ``rho`` and ``wy = det_weight * tod``; the per-sample writes
+    target distinct pixels' entries, so no cross-iteration races exist.
+    """
+    for i in range(pix.shape[0]):
+        p = pix[i]
+        a = ac2[i]
+        b = as2[i]
+        y = wy[i]
+        matrix[p, 0, 0] += w
+        matrix[p, 0, 1] += w * a
+        matrix[p, 0, 2] += w * b
+        matrix[p, 1, 1] += w * a * a
+        matrix[p, 1, 2] += w * a * b
+        matrix[p, 2, 2] += w * b * b
+        matrix[p, 1, 0] += y
+        matrix[p, 2, 0] += y * a
+        matrix[p, 2, 1] += y * b
 
 
 def init_map_matrix(nside: int) -> np.ndarray:
@@ -53,23 +86,14 @@ def accumulate_tqu_matrix(
 
     w = float(det_weight)
     r = float(rho)
-    # Polarised response columns carry rho; the intensity column does not.
+    # Polarised response columns carry rho; the intensity column does not. ac2/as2 and
+    # wy are built vectorised, then a single fused numba pass does all 9 scatter-adds
+    # (A = [1, rho*cos2psi, rho*sin2psi]; upper triangle = A^T N^-1 A, lower = A^T N^-1 d).
     ac2 = r * np.cos(2.0 * psi)
     as2 = r * np.sin(2.0 * psi)
-    wy = w * tod
-
-    # Upper triangle: normal matrix A^T N^-1 A  with A = [1, rho*cos2psi, rho*sin2psi]
-    np.add.at(matrix[:, 0, 0], pix, w)
-    np.add.at(matrix[:, 0, 1], pix, w * ac2)
-    np.add.at(matrix[:, 0, 2], pix, w * as2)
-    np.add.at(matrix[:, 1, 1], pix, w * ac2 * ac2)
-    np.add.at(matrix[:, 1, 2], pix, w * ac2 * as2)
-    np.add.at(matrix[:, 2, 2], pix, w * as2 * as2)
-
-    # Lower triangle: RHS A^T N^-1 d
-    np.add.at(matrix[:, 1, 0], pix, wy)
-    np.add.at(matrix[:, 2, 0], pix, wy * ac2)
-    np.add.at(matrix[:, 2, 1], pix, wy * as2)
+    wy = w * np.asarray(tod, dtype=np.float64)
+    pix64 = np.ascontiguousarray(pix, dtype=np.int64)
+    _accumulate_tqu_jit(matrix, pix64, ac2, as2, w, wy)
 
 
 def solve_tqu_from_matrix(

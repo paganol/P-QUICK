@@ -91,6 +91,13 @@ class ConvolutionConfig:
             divides by ``sqrt(4 pi) b_00`` so a constant-sky input remains constant
             after convolution. ``"raw"`` uses the beam coefficients exactly as stored
             in the FITS file.
+        cache_interpolator: If ``True`` (default), build each detector's ducc0
+            convolution cube once and reuse it across every OD/chunk on the rank. The
+            cube depends only on the sky, beam, ``lmax``, ``mmax`` and ``epsilon`` — not
+            on the pointing — so this removes a redundant per-OD rebuild (the dominant
+            convolution cost) at the price of holding one cube per detector resident
+            (~0.4 GB at lmax=1024/mmax=6, ~1-2 GB at lmax=2048). Set ``False`` to rebuild
+            per OD (lower memory, slower).
 
     The scalar Planck blm is always synthesised into a spin-2 ``[T, E, B]`` beam
     (:func:`~pquick.io.build_polarized_beam_alm`): the ellipse is carried Dxx -> Pxx
@@ -103,6 +110,7 @@ class ConvolutionConfig:
     epsilon: float = 1e-5
     chunks: int = 1
     beam_normalization: str = "unit_integral"
+    cache_interpolator: bool = True
 
 
 @dataclass
@@ -217,6 +225,7 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
             epsilon=float(data.get("convolution", {}).get("epsilon", 1e-5)),
             chunks=int(data.get("convolution", {}).get("chunks", 1)),
             beam_normalization=str(data.get("convolution", {}).get("beam_normalization", "unit_integral")),
+            cache_interpolator=bool(data.get("convolution", {}).get("cache_interpolator", True)),
         ),
         map=MapConfig(
             nside=int(data["map"]["nside"]),

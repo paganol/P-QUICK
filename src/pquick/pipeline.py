@@ -325,10 +325,14 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     t_resamp_total = t_conv_total = t_macc_total = 0.0
 
     # The ducc0 convolution cube depends only on (sky, beam, lmax, mmax, epsilon) — not on
-    # the pointing — so build it once per detector and reuse across every OD/chunk on this
-    # rank. Building the cube is ~90 % of the convolution cost; this keeps one cube resident
-    # per detector (~0.4 GB at lmax=1024/mmax=6, ~1–2 GB at lmax=2048).
+    # the pointing — so (when config.convolution.cache_interpolator) build it once per
+    # detector and reuse across every OD/chunk on this rank. Building the cube is the
+    # dominant convolution cost; reuse keeps one cube resident per detector (~0.4 GB at
+    # lmax=1024/mmax=6, ~1–2 GB at lmax=2048). Disable for lower memory at the cost of a
+    # per-OD rebuild.
+    cache_interp = bool(config.convolution.cache_interpolator)
     beam_interp_cache: dict[str, Any] = {}
+    _vprint(verbose, rank, f"[Convolution] cache_interpolator={cache_interp}")
 
     for od_idx, npz_path in enumerate(local_pointing, start=1):
         _vprint(verbose, rank, f"[OD {od_idx}/{len(local_pointing)}] {npz_path.name}")
@@ -483,10 +487,10 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                         ptg_buf[:ngood, :2],
                         nthreads=nthreads,
                     )
-                    ptg_buf[:ngood, :2] = hpx_center.pix2ang(pix_center)
+                    ptg_buf[:ngood, :2] = hpx_center.pix2ang(pix_center, nthreads=nthreads)
 
                 _t0 = _time.perf_counter()
-                conv_interp = beam_interp_cache.get(det_name)
+                conv_interp = beam_interp_cache.get(det_name) if cache_interp else None
                 if conv_interp is None:
                     conv_interp = build_convolution_interpolator(
                         sky_alm,
@@ -497,7 +501,8 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                         epsilon=config.convolution.epsilon,
                         npoints=chunk_samples,
                     )
-                    beam_interp_cache[det_name] = conv_interp
+                    if cache_interp:
+                        beam_interp_cache[det_name] = conv_interp
                 tod = evaluate_convolution(conv_interp, ptg_buf[:ngood])
                 t_conv_od += _time.perf_counter() - _t0
 
