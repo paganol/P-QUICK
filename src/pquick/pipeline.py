@@ -31,14 +31,18 @@ from .quaternion import bore_det_to_angles, bore_det_to_ptg, normalize_quaternio
 from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution, resolve_nthreads
 
 
-def _load_bad_ring_intervals(path: str | Path) -> dict[str, list[tuple[float, float]]]:
+def _load_bad_ring_intervals(path: str | Path) -> dict[str, np.ndarray]:
     """Load a TOAST/NPIPE-style bad-ring interval file.
 
     The file format is plain text with rows:
         ``<det_or_ALL> <tstart_s> <tstop_s>``
     and optional comment lines starting with ``#``.
+
+    Returns one ``(M, 2)`` float64 array of ``[tstart, tstop]`` rows per key, so
+    :func:`_chunk_bad_ring_mask` can filter overlaps with vectorised numpy ops instead
+    of a Python loop over every interval (files can hold >100k intervals).
     """
-    intervals: dict[str, list[tuple[float, float]]] = {}
+    raw: dict[str, list[tuple[float, float]]] = {}
     p = Path(path)
     with p.open("r", encoding="utf-8") as f:
         for iline, line in enumerate(f, start=1):
@@ -53,37 +57,53 @@ def _load_bad_ring_intervals(path: str | Path) -> dict[str, list[tuple[float, fl
             tstop = float(parts[2])
             if tstop < tstart:
                 tstart, tstop = tstop, tstart
-            intervals.setdefault(det_key, []).append((tstart, tstop))
-    return intervals
+            raw.setdefault(det_key, []).append((tstart, tstop))
+    return {k: np.asarray(v, dtype=np.float64).reshape(-1, 2) for k, v in raw.items()}
 
 
 def _chunk_bad_ring_mask(
-    intervals: dict[str, list[tuple[float, float]]] | None,
+    intervals: dict[str, np.ndarray] | None,
     det_name: str,
     coarse_t0_ns: float,
     native_rate_hz: float,
     chunk_start: int,
     chunk_len: int,
 ) -> np.ndarray:
-    """Return a boolean mask of bad samples for one chunk and detector."""
+    """Return a boolean mask of bad samples for one chunk and detector.
+
+    ``times[i] = t0_s + i*dt_s`` is monotonic, so each interval maps to a contiguous
+    index range ``[ceil((tstart-t0)/dt), floor((tstop-t0)/dt)]`` — computed analytically
+    with no per-sample comparison. The overlap test and index conversion are vectorised
+    over the whole interval table (>100k rows) at once; only the few intervals that
+    actually fall in this chunk are written.
+    """
     if not intervals:
         return np.zeros(chunk_len, dtype=bool)
 
-    det_key = det_name.upper()
-    det_intervals = intervals.get(det_key, []) + intervals.get("ALL", [])
-    if not det_intervals:
-        return np.zeros(chunk_len, dtype=bool)
+    parts = [a for a in (intervals.get(det_name.upper()), intervals.get("ALL")) if a is not None]
+    out = np.zeros(chunk_len, dtype=bool)
+    if not parts:
+        return out
+    iv = parts[0] if len(parts) == 1 else np.concatenate(parts, axis=0)
 
     dt_s = 1.0 / float(native_rate_hz)
     t0_s = float(coarse_t0_ns) * 1.0e-9 + float(chunk_start) * dt_s
-    times = t0_s + dt_s * np.arange(chunk_len, dtype=np.float64)
+    t_last = t0_s + (chunk_len - 1) * dt_s
 
-    out = np.zeros(chunk_len, dtype=bool)
-    t_first = float(times[0])
-    t_last = float(times[-1])
-    for tstart, tstop in det_intervals:
-        if tstart <= t_last and tstop >= t_first:
-            out |= (times >= tstart) & (times <= tstop)
+    starts = iv[:, 0]
+    stops = iv[:, 1]
+    over = (starts <= t_last) & (stops >= t0_s)
+    if not np.any(over):
+        return out
+
+    inv_dt = float(native_rate_hz)
+    i0 = np.ceil((starts[over] - t0_s) * inv_dt).astype(np.int64)
+    i1 = np.floor((stops[over] - t0_s) * inv_dt).astype(np.int64) + 1
+    np.clip(i0, 0, chunk_len, out=i0)
+    np.clip(i1, 0, chunk_len, out=i1)
+    for a, b in zip(i0.tolist(), i1.tolist()):
+        if b > a:
+            out[a:b] = True
     return out
 
 
@@ -265,7 +285,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     od_start, od_end = parse_mission_length(mission)
     all_pointing = build_pointing_file_paths(config.inputs.pointings, od_start, od_end)
 
-    bad_ring_intervals: dict[str, list[tuple[float, float]]] | None = None
+    bad_ring_intervals: dict[str, np.ndarray] | None = None
     if config.inputs.bad_rings_file is not None:
         bad_ring_intervals = _load_bad_ring_intervals(config.inputs.bad_rings_file)
         _vprint(
