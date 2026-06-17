@@ -4,14 +4,14 @@ import argparse
 import time as _time
 import warnings
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import healpy as hp
 import numpy as np
 from ducc0.healpix import Healpix_Base
 
 from .config import PipelineConfig, load_config
-from .convolution import convolve_timeline
+from .convolution import build_convolution_interpolator, evaluate_convolution
 from .io import (
     build_polarized_beam_alm,
     detector_to_beam_file,
@@ -324,6 +324,12 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
     t_resamp_total = t_conv_total = t_macc_total = 0.0
 
+    # The ducc0 convolution cube depends only on (sky, beam, lmax, mmax, epsilon) — not on
+    # the pointing — so build it once per detector and reuse across every OD/chunk on this
+    # rank. Building the cube is ~90 % of the convolution cost; this keeps one cube resident
+    # per detector (~0.4 GB at lmax=1024/mmax=6, ~1–2 GB at lmax=2048).
+    beam_interp_cache: dict[str, Any] = {}
+
     for od_idx, npz_path in enumerate(local_pointing, start=1):
         _vprint(verbose, rank, f"[OD {od_idx}/{len(local_pointing)}] {npz_path.name}")
         t_resamp_od = t_conv_od = t_macc_od = 0.0
@@ -480,16 +486,19 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                     ptg_buf[:ngood, :2] = hpx_center.pix2ang(pix_center)
 
                 _t0 = _time.perf_counter()
-                tod = convolve_timeline(
-                    sky_alm=sky_alm,
-                    beam_alm=beam_alm,
-                    ptg_thetaphipsi=ptg_buf[:ngood],
-                    lmax=config.convolution.lmax,
-                    mmax=config.convolution.mmax,
-                    nthreads=nthreads,
-                    epsilon=config.convolution.epsilon,
-                    interpolator_cache=None,
-                )
+                conv_interp = beam_interp_cache.get(det_name)
+                if conv_interp is None:
+                    conv_interp = build_convolution_interpolator(
+                        sky_alm,
+                        beam_alm,
+                        lmax=config.convolution.lmax,
+                        mmax=config.convolution.mmax,
+                        nthreads=nthreads,
+                        epsilon=config.convolution.epsilon,
+                        npoints=chunk_samples,
+                    )
+                    beam_interp_cache[det_name] = conv_interp
+                tod = evaluate_convolution(conv_interp, ptg_buf[:ngood])
                 t_conv_od += _time.perf_counter() - _t0
 
                 _t0 = _time.perf_counter()
