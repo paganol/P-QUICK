@@ -23,7 +23,6 @@ convolution:
   epsilon: 1.0e-05
   chunks: 1
   beam_normalization: unit_integral
-  polarized_beam: true
   extra_psi_deg: 0.0
 map:
   nside: 1024

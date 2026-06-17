@@ -190,6 +190,15 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         raise ValueError(f"Configured lmax={config.convolution.lmax} exceeds sky alm lmax={lmax_alm}")
     sky_alm = truncate_alm(sky_alm, lmax_alm, config.convolution.lmax)
 
+    # Per-component (T,E,B) input rescale (debug knob, e.g. [1,0,0] for T-only).
+    rescale = config.inputs.rescale
+    if rescale != (1.0, 1.0, 1.0):
+        sky_alm = np.array(sky_alm, dtype=np.complex128, copy=True)
+        for i in range(min(3, sky_alm.shape[0])):
+            if rescale[i] != 1.0:
+                sky_alm[i] *= rescale[i]
+        _vprint(verbose, rank, f"[Inputs] sky alm rescaled by (T,E,B) = {tuple(rescale)}")
+
     det_meta = load_rimo_detectors(config.inputs.rimo_file)
     detectors = select_detectors(list(det_meta.keys()), config.detector_selection)
 
@@ -203,26 +212,25 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         )
         dmeta = det_meta.get(det, {})
         psi_pol_rad = float(dmeta.get("psi_pol_rad", 0.0))
-        if config.convolution.polarized_beam:
-            # Scalar Planck blm (Dxx) -> spin-2 polarised [T, E, B] beam in the Pxx frame.
-            beam_alm = build_polarized_beam_alm(
-                beam_alm,
-                psi_pol_rad=psi_pol_rad,
-                lmax=config.convolution.lmax,
-                mmax=config.convolution.mmax,
-                psi_uv_rad=float(dmeta.get("psi_uv_rad", 0.0)),
-                # Match the map-making polarisation efficiency so EE/BB are not
-                # inflated by 1/rho^2 (1.0 when use_cross_pol is off).
-                rho_pol=(
-                    float(dmeta.get("rho_pol", 1.0)) if config.map.use_cross_pol else 1.0
-                ),
-            )
-            _vprint(
-                verbose,
-                rank,
-                f"  [beam] {det}: spin-2 polarised [T,E,B] beam built "
-                f"(ncomp={beam_alm.shape[0]}, psi_pol={np.degrees(psi_pol_rad):.3f} deg)",
-            )
+        # Scalar Planck blm (Dxx) -> spin-2 polarised [T, E, B] beam in the Pxx frame.
+        beam_alm = build_polarized_beam_alm(
+            beam_alm,
+            psi_pol_rad=psi_pol_rad,
+            lmax=config.convolution.lmax,
+            mmax=config.convolution.mmax,
+            psi_uv_rad=float(dmeta.get("psi_uv_rad", 0.0)),
+            # Match the map-making polarisation efficiency so EE/BB are not
+            # inflated by 1/rho^2 (1.0 when use_cross_pol is off).
+            rho_pol=(
+                float(dmeta.get("rho_pol", 1.0)) if config.map.use_cross_pol else 1.0
+            ),
+        )
+        _vprint(
+            verbose,
+            rank,
+            f"  [beam] {det}: spin-2 polarised [T,E,B] beam built "
+            f"(ncomp={beam_alm.shape[0]}, psi_pol={np.degrees(psi_pol_rad):.3f} deg)",
+        )
         beam_alm = normalize_beam_alm(
             beam_alm,
             mode=config.convolution.beam_normalization,
@@ -413,8 +421,6 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 beam_alm = np.asarray(dinfo["beam_alm"], dtype=np.complex128)
                 det_weight = cast(float, dinfo["weight"])
                 det_name = str(dinfo["name"])
-                psi_pol_rad = cast(float, dinfo["psi_pol_rad"])
-                psi_uv_rad = cast(float, dinfo["psi_uv_rad"])
                 rho_pol = cast(float, dinfo["rho_pol"])
 
                 _vprint(
@@ -449,36 +455,17 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
                 q_bore_good = q_bore_all if ngood == chunk_len else q_bore_all[good]
 
-                # Fill pre-allocated buffers directly — no temporary arrays.
-                # det_quat is built from psi_uv only, so psi_buf is the Pxx
-                # (polarisation-frame) angle used directly for mapmaking.
-                # Convolution frame:
-                #   polarized_beam -> beam already rotated to Pxx, convolve at psi_pxx
-                #                     (offset 0)
-                #   intensity-only -> scalar beam is Dxx, convolve at psi_dxx
-                #                     (offset psi_pol)
-                # Carry the beam ellipse Dxx -> Pxx (psi_uv) so a horn's two PSB arms
-                # co-orient in the common Pxx frame.
-                #   polarized_beam: the [T,E,B] beam is already rotated to Pxx in
-                #     build_polarized_beam_alm, so convolve at psi_pxx = psi_buf
-                #     (offset 0); map-making shares that frame.
-                #   intensity-only: the scalar beam is still in Dxx, so apply the
-                #     Dxx -> Pxx rotation (psi_uv) as the convolution offset.
-                if config.convolution.polarized_beam:
-                    psi_conv_offset = 0.0
-                else:
-                    psi_conv_offset = psi_uv_rad
-                # Diagnostic: constant beam-orientation offset on the convolution psi
-                # only (not map-making). Sweep convolution.extra_psi_deg to find the
-                # value that flattens an asymmetric-beam transfer-function ratio.
-                psi_conv_offset += np.radians(config.convolution.extra_psi_deg)
+                # Fill pre-allocated buffers directly — no temporary arrays. det_quat is
+                # built from psi_uv only, so psi_buf is the Pxx (polarisation-frame)
+                # angle used directly for mapmaking. The [T,E,B] beam is already rotated
+                # to Pxx in build_polarized_beam_alm, so convolve at psi_pxx = psi_buf
+                # (offset 0) and the beam, convolution and map-making share that frame.
                 _t0 = _time.perf_counter()
                 bore_det_to_ptg(
                     q_bore_good,
                     det_quat,
                     ptg_buf[:ngood],
                     psi_buf[:ngood],
-                    psi_offset=psi_conv_offset,
                 )
                 t_resamp_od += _time.perf_counter() - _t0
 

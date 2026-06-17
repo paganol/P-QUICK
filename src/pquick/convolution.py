@@ -11,10 +11,10 @@ def _match_component_count(sky: np.ndarray, beam: np.ndarray) -> tuple[np.ndarra
         return sky, beam
 
     if sky.shape[0] == 3 and beam.shape[0] == 1:
-        # Intensity-only fallback (polarized_beam=False): put the scalar beam in the
-        # T slot and zero the E/B slots (ducc0's other two components are the spin-2
-        # response, not Q/U). For a polarised run, build [T, E, B] upstream via
-        # io.build_polarized_beam_alm so beam.shape[0] == 3 and this branch is skipped.
+        # Scalar (1-component) beam with a [T,E,B] sky: put it in the T slot and zero
+        # the E/B slots (ducc0's other two components are the spin-2 response, not Q/U).
+        # The pipeline always builds [T,E,B] via io.build_polarized_beam_alm, so this is
+        # only a safety promotion for callers passing a bare intensity beam.
         promoted = np.zeros((3, beam.shape[1]), dtype=np.complex128)
         promoted[0] = beam[0]
         return sky, promoted

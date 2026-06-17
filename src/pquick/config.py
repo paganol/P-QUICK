@@ -44,6 +44,11 @@ class InputsConfig:
         bad_rings_file: Optional path to a TOAST/NPIPE-style bad-ring interval
             text file with rows ``<det_or_ALL> <tstart_s> <tstop_s>``.
             Intervals are applied on top of existing flags.
+        rescale: Per-component multipliers ``(x, y, z)`` applied to the input sky
+            ``(almT, almE, almB)`` before convolution. ``None`` (default) means
+            ``(1, 1, 1)`` (no rescaling); a scalar ``s`` means ``(s, s, s)``. Useful
+            for isolating components, e.g. ``[1, 0, 0]`` -> T-only, ``[0, 1, 0]`` ->
+            E-only.
     """
 
     sky_alm: str
@@ -53,6 +58,7 @@ class InputsConfig:
     pointings: str = "inputs/pointings/pointing_"
     flags: str | None = None
     bad_rings_file: str | None = None
+    rescale: tuple[float, float, float] = (1.0, 1.0, 1.0)
 
 
 @dataclass
@@ -85,22 +91,11 @@ class ConvolutionConfig:
             divides by ``sqrt(4 pi) b_00`` so a constant-sky input remains constant
             after convolution. ``"raw"`` uses the beam coefficients exactly as stored
             in the FITS file.
-        polarized_beam: If ``True`` (default), synthesise a proper spin-2 polarised
-            beam ``[T, E, B]`` from the scalar co-polar Planck blm so the convolution
-            captures the detector polarisation response. If ``False``, use the
-            intensity beam only (``[b, 0, 0]``); Q/U recover ~0.
-        extra_psi_deg: Constant offset (degrees) added to the convolution psi only
-            (the beam orientation), not to the map-making psi. Diagnostic knob for
-            an asymmetric-beam orientation error: sweep it and look for the value
-            that flattens the transfer-function ratio. ``0`` for production.
 
-    Note: the per-detector ``psi_uv`` is always removed from the beam-shape
-    convolution orientation (kept only in the map-making polarisation angle), so a
-    horn's two PSB arms convolve their near-identical beams co-oriented on the sky
-    rather than 90 deg apart. This is the scan-relative frame qp_planck uses (where
-    ``psi_uv`` cancels between the beam rotation and the scan spin moments);
-    without it the orthogonal arms cancel the channel beam ellipticity and the
-    temperature window is wrong.
+    The scalar Planck blm is always synthesised into a spin-2 ``[T, E, B]`` beam
+    (:func:`~pquick.io.build_polarized_beam_alm`): the ellipse is carried Dxx -> Pxx
+    by ``psi_uv`` so a horn's two PSB arms co-orient in the common Pxx frame, and the
+    beam, convolution and map-making all share that frame.
     """
 
     lmax: int
@@ -108,8 +103,6 @@ class ConvolutionConfig:
     epsilon: float = 1e-5
     chunks: int = 1
     beam_normalization: str = "unit_integral"
-    polarized_beam: bool = True
-    extra_psi_deg: float = 0.0
 
 
 @dataclass
@@ -169,6 +162,23 @@ class PipelineConfig:
     nthreads: int = 0
 
 
+def _parse_rescale(value: Any) -> tuple[float, float, float]:
+    """Parse ``inputs.rescale`` into a (T, E, B) multiplier triple.
+
+    ``None`` -> ``(1, 1, 1)``; a scalar ``s`` -> ``(s, s, s)``; a 3-element
+    sequence ``[x, y, z]`` -> ``(x, y, z)``.
+    """
+    if value is None:
+        return (1.0, 1.0, 1.0)
+    if isinstance(value, (int, float)):
+        s = float(value)
+        return (s, s, s)
+    seq = list(value)
+    if len(seq) != 3:
+        raise ValueError(f"inputs.rescale must be null, a scalar, or 3 numbers; got {value!r}")
+    return tuple(float(x) for x in seq)  # type: ignore[return-value]
+
+
 def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
     detsel = data.get("detector_selection") or {}
     map_cfg = data.get("map", {}) or {}
@@ -191,6 +201,7 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
                 if data["inputs"].get("bad_rings_file") is not None
                 else None
             ),
+            rescale=_parse_rescale(data["inputs"].get("rescale")),
         ),
         detector_selection=DetectorSelection(
             channel=channel,
@@ -206,8 +217,6 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
             epsilon=float(data.get("convolution", {}).get("epsilon", 1e-5)),
             chunks=int(data.get("convolution", {}).get("chunks", 1)),
             beam_normalization=str(data.get("convolution", {}).get("beam_normalization", "unit_integral")),
-            polarized_beam=bool(data.get("convolution", {}).get("polarized_beam", True)),
-            extra_psi_deg=float(data.get("convolution", {}).get("extra_psi_deg", 0.0)),
         ),
         map=MapConfig(
             nside=int(data["map"]["nside"]),

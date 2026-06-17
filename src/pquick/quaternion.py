@@ -257,12 +257,10 @@ def _bore_det_to_ptg_jit(
     det_quat: np.ndarray,
     ptg: np.ndarray,
     psi_out: np.ndarray,
-    psi_offset: float,
 ) -> None:
     """Fused quat-product + angles, writing into pre-allocated output buffers.
 
-    ``ptg[:, 0] = theta``, ``ptg[:, 1] = phi``, ``ptg[:, 2] = psi + psi_offset``.
-    ``psi_out[:] = psi``  (without offset, for the mapmaking normal equations).
+    ``ptg[:, 0] = theta``, ``ptg[:, 1] = phi``, ``ptg[:, 2] = psi``.
     """
     dx = det_quat[0]; dy = det_quat[1]; dz = det_quat[2]; dw = det_quat[3]
     TWO_PI = 2.0 * math.pi
@@ -307,11 +305,9 @@ def _bore_det_to_ptg_jit(
 
         ptg[i, 0] = t
         ptg[i, 1] = p
-        ptg[i, 2] = ps + psi_offset
+        ptg[i, 2] = ps
         psi_out[i] = ps
 
-
-_PSI_CONV_OFFSET = 0.0
 
 
 def bore_det_to_ptg(
@@ -319,7 +315,6 @@ def bore_det_to_ptg(
     det_quat: np.ndarray,
     ptg: np.ndarray,
     psi_out: np.ndarray,
-    psi_offset: float = _PSI_CONV_OFFSET,
 ) -> None:
     """Fill pre-allocated pointing and psi buffers from boresight quaternions.
 
@@ -338,13 +333,10 @@ def bore_det_to_ptg(
         det_quat: Fixed detector offset quaternion, shape ``(4,)``.
         ptg: Pre-allocated output array, shape ``(N, 3)``, C-contiguous float64.
         psi_out: Pre-allocated output array, shape ``(N,)``, float64.
-        psi_offset: Scalar added to psi in column 2 of *ptg*.  Default is ``0``.
-            Additional frame shifts (e.g. Pxx -> Dxx via ``psi_pol``) should be
-            added by the caller.
     """
     q_bore = np.ascontiguousarray(q_bore, dtype=np.float64)
     det_quat = np.ascontiguousarray(det_quat, dtype=np.float64)
-    _bore_det_to_ptg_jit(q_bore, det_quat, ptg, psi_out, float(psi_offset))
+    _bore_det_to_ptg_jit(q_bore, det_quat, ptg, psi_out)
 
 
 def quaternion_to_thetaphipsi(q: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

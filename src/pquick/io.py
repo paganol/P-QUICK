@@ -463,7 +463,7 @@ def build_polarized_beam_alm(
     angle. The beam ellipse lives in Dxx and is carried into the Pxx convolution frame
     by ``psi_uv``; the polarisation axis is left at the Pxx x-axis, matching the
     convolution and map-making, which both read polarisation at the Pxx pointing angle
-    ``psi_buf``. Convolve the returned beam at ``psi_pxx = psi_buf`` (``psi_offset=0``).
+    ``psi_buf``. Convolve the returned beam at ``psi_pxx = psi_buf``. 
 
     Args:
         beam_alm_scalar: Scalar intensity beam ``(1, nalm)`` or ``(nalm,)``, healpy

@@ -22,10 +22,6 @@ convolution:
   epsilon: 1.0e-5
   chunks: 1
   beam_normalization: unit_integral
-  # Temperature-window validation vs an intensity-only QuickPol B_ell: use the
-  # scalar [b,0,0] beam (no synthesised polarisation). Set true for a full
-  # spin-2 [T,E,B] beam.
-  polarized_beam: false
   extra_psi_deg: 0.0
 
 map:

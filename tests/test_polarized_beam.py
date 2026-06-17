@@ -116,13 +116,18 @@ def test_polarized_beam_recovers_e_mode_and_psb_arms_agree():
     scal[0, hp.Alm.getidx(lmax, ell, 0)] = bl * np.sqrt((2 * ell + 1) / (4 * np.pi))
     scal = normalize_beam_alm(scal)
 
-    # pure-E sky
+    # pure-E sky (seeded for determinism)
+    np.random.seed(0)
     cle = np.zeros(lmax + 1)
     cle[2:] = (np.arange(2, lmax + 1) / 50.0) ** -2.0
     almE = hp.synalm(cle, lmax=lmax)
     z = np.zeros_like(almE)
     sky = np.array([z, almE, z])
-    _, Qm, Um = hp.alm2map([sky[0], sky[1], sky[2]], nside, lmax=lmax, pol=True)
+    # Beam-smoothed input Q/U: the convolved-then-solved map recovers the *smoothed*
+    # sky, so compare against that (not the un-smoothed input) to avoid a single-pixel
+    # smoothed-vs-unsmoothed mismatch.
+    Im, Qm, Um = hp.alm2map([sky[0], sky[1], sky[2]], nside, lmax=lmax, pol=True)
+    _, Qm, Um = hp.smoothing(np.array([Im, Qm, Um]), fwhm=np.radians(0.5), pol=True)
 
     pix = hp.ang2pix(nside, np.pi / 2, 1.0)
     th, ph = hp.pix2ang(nside, pix)
@@ -145,8 +150,8 @@ def test_polarized_beam_recovers_e_mode_and_psb_arms_agree():
     Ia, Qa, Ua = recover(23.1, 0.22)    # 100-1a
     Ib, Qb, Ub = recover(-68.2, 0.13)   # 100-1b (psi_uv ~90 deg from a)
 
-    # recovered Q/U align with the input sky (within beam smoothing), not cancelled
+    # recovered Q/U match the beam-smoothed input sky (apples-to-apples), not cancelled
     assert np.sign(Qa) == np.sign(Qm[pix]) and np.sign(Ua) == np.sign(Um[pix])
-    assert abs(Qa / Qm[pix] - 1.0) < 0.1 and abs(Ua / Um[pix] - 1.0) < 0.1
+    assert abs(Qa / Qm[pix] - 1.0) < 0.02 and abs(Ua / Um[pix] - 1.0) < 0.02
     # the two arms agree (the bug made them cancel / disagree)
     assert abs(Qa - Qb) < 1e-3 * abs(Qa) and abs(Ua - Ub) < 1e-3 * abs(Ua)
