@@ -184,6 +184,13 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     numba.set_num_threads(nthreads)
     _vprint(verbose, rank, f"[Threads] nthreads={nthreads} (ducc0 + numba)")
 
+    # Wall-clock anchor for the whole run (everything after MPI/import startup). The
+    # per-section timers below (resamp/conv/macc/reduce/solve) only instrument specific
+    # blocks; t_wall0 lets the summary report the true elapsed time and an "other"
+    # bucket (setup, flag I/O, masking, boresight copies, output write) so the printed
+    # accounting reconciles with a stopwatch around the process.
+    t_wall0 = _time.perf_counter()
+
     sky_alm = load_sky_alm(config.inputs.sky_alm)
     lmax_alm = infer_lmax_from_alm(sky_alm)
     if config.convolution.lmax > lmax_alm:
@@ -322,7 +329,12 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     n_chunks_cfg = int(max(1, config.convolution.chunks))
 
 
+    # Everything from sky load through beam build / MPI distribution / allocation is
+    # one-time setup, untimed by the per-section timers.
+    t_setup = _time.perf_counter() - t_wall0
+
     t_resamp_total = t_conv_total = t_macc_total = 0.0
+    t_od_wall_total = 0.0
 
     # The ducc0 convolution cube depends only on (sky, beam, lmax, mmax, epsilon) — not on
     # the pointing — so (when config.convolution.cache_interpolator) build it once per
@@ -337,6 +349,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     for od_idx, npz_path in enumerate(local_pointing, start=1):
         _vprint(verbose, rank, f"[OD {od_idx}/{len(local_pointing)}] {npz_path.name}")
         t_resamp_od = t_conv_od = t_macc_od = 0.0
+        _od_wall0 = _time.perf_counter()
 
         _t0 = _time.perf_counter()
         point_us = load_pointing_npz(npz_path)
@@ -515,7 +528,9 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                         nthreads=nthreads,
                     )
                 accumulate_tqu_matrix(matrix_acc, pix, psi_buf[:ngood], np.asarray(tod, dtype=np.float64), det_weight, rho=rho_pol)
-                np.add.at(hits_acc, pix, 1)
+                # bincount is a single C-level pass, much faster than np.add.at's
+                # unbuffered scatter for the per-pixel hit count.
+                hits_acc += np.bincount(pix, minlength=hits_acc.shape[0]).astype(hits_acc.dtype, copy=False)
                 del pix, tod
                 t_macc_od += _time.perf_counter() - _t0
 
@@ -524,11 +539,14 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         t_resamp_total += t_resamp_od
         t_conv_total += t_conv_od
         t_macc_total += t_macc_od
+        od_wall = _time.perf_counter() - _od_wall0
+        t_od_wall_total += od_wall
+        _od_other = od_wall - (t_resamp_od + t_conv_od + t_macc_od)
         _vprint(
             verbose,
             rank,
             f"  [OD timing] resamp={t_resamp_od:.2f}s  conv={t_conv_od:.2f}s  macc={t_macc_od:.2f}s"
-            f"  od_total={t_resamp_od + t_conv_od + t_macc_od:.2f}s",
+            f"  other={_od_other:.2f}s  od_wall={od_wall:.2f}s",
         )
 
     _vprint(verbose, rank, f"OD loop done. Reducing matrices across {size} rank(s) …")
@@ -541,15 +559,19 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     _vprint(verbose, rank, f"Reduce done in {t_reduce:.2f}s. Solving T/Q/U …")
 
     if rank != 0:
+        _od_other_total = t_od_wall_total - (t_resamp_total + t_conv_total + t_macc_total)
+        _wall = _time.perf_counter() - t_wall0
         _vprint(
             verbose,
             rank,
             f"[Timing summary]"
+            f"  setup={t_setup:.2f}s"
             f"  resamp={t_resamp_total:.2f}s"
             f"  conv={t_conv_total:.2f}s"
             f"  macc={t_macc_total:.2f}s"
+            f"  od_other={_od_other_total:.2f}s"
             f"  reduce={t_reduce:.2f}s"
-            f"  total={t_resamp_total + t_conv_total + t_macc_total + t_reduce:.2f}s",
+            f"  wall={_wall:.2f}s",
         )
         return None
 
@@ -558,17 +580,6 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     _t0 = _time.perf_counter()
     t_map, q_map, u_map = solve_tqu_from_matrix(matrix_all)
     t_solve = _time.perf_counter() - _t0
-    _vprint(
-        verbose,
-        rank,
-        f"[Timing summary]"
-        f"  resamp={t_resamp_total:.2f}s"
-        f"  conv={t_conv_total:.2f}s"
-        f"  macc={t_macc_total:.2f}s"
-        f"  reduce={t_reduce:.2f}s"
-        f"  solve={t_solve:.2f}s"
-        f"  total={t_resamp_total + t_conv_total + t_macc_total + t_reduce + t_solve:.2f}s",
-    )
     nobs00 = matrix_all[:, 0, 0]
 
     outdir = Path(config.output.output_dir)
@@ -580,6 +591,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     wpol_path = outdir / f"{prefix}_wpol.fits"
     nobs_path = outdir / f"{prefix}_nobs00.fits"
 
+    _t0 = _time.perf_counter()
     hp.write_map(
         str(map_path),
         [t_map, q_map, u_map],
@@ -590,6 +602,33 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     hp.write_map(str(hits_path), hits_all.astype(np.float64), overwrite=True, dtype=np.float64, nest=config.map.nest)
     hp.write_map(str(wpol_path), nobs00, overwrite=True, dtype=np.float64, nest=config.map.nest)
     hp.write_map(str(nobs_path), nobs00, overwrite=True, dtype=np.float64, nest=config.map.nest)
+    t_write = _time.perf_counter() - _t0
+
+    # Reconcile against the stopwatch: wall is the true elapsed time inside run_pipeline;
+    # the section timers (resamp/conv/macc/reduce/solve/write) plus setup and od_other
+    # (per-OD flag I/O, sample masking, boresight copies) should sum to it, leaving only
+    # a small "unaccounted" remainder (import-triggered lazy work, GC, etc.).
+    od_other_total = t_od_wall_total - (t_resamp_total + t_conv_total + t_macc_total)
+    wall = _time.perf_counter() - t_wall0
+    accounted = (
+        t_setup + t_resamp_total + t_conv_total + t_macc_total
+        + od_other_total + t_reduce + t_solve + t_write
+    )
+    _vprint(
+        verbose,
+        rank,
+        f"[Timing summary]"
+        f"  setup={t_setup:.2f}s"
+        f"  resamp={t_resamp_total:.2f}s"
+        f"  conv={t_conv_total:.2f}s"
+        f"  macc={t_macc_total:.2f}s"
+        f"  od_other={od_other_total:.2f}s"
+        f"  reduce={t_reduce:.2f}s"
+        f"  solve={t_solve:.2f}s"
+        f"  write={t_write:.2f}s"
+        f"  unaccounted={wall - accounted:.2f}s"
+        f"  wall={wall:.2f}s",
+    )
 
     return map_path
 

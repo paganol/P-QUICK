@@ -1,30 +1,43 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from ducc0.healpix import Healpix_Base
 from numba import njit as _njit
+from numba import prange as _prange
 
 # Standard HEALPix sentinel for unobserved pixels (same value used by healpy).
 _UNSEEN: float = -1.6375e30
 
 
-@_njit(fastmath=True, cache=True)
+@_njit(fastmath=True, cache=True, parallel=True)
 def _accumulate_tqu_jit(
     matrix: np.ndarray,
     pix: np.ndarray,
-    ac2: np.ndarray,
-    as2: np.ndarray,
+    psi: np.ndarray,
+    tod: np.ndarray,
     w: float,
-    wy: np.ndarray,
+    rho: float,
 ) -> None:
-    """Single-pass scatter-accumulate of the 9 normal-equation entries per sample.
+    """Accumulate the 9 normal-equation entries per sample into *matrix* in place.
 
-    Replaces ten separate ``np.add.at`` scatter passes (each re-reading ``pix``) with
-    one fused loop, reading ``pix`` once per sample. ``ac2``/``as2`` already carry the
-    polarisation efficiency ``rho`` and ``wy = det_weight * tod``; the per-sample writes
-    target distinct pixels' entries, so no cross-iteration races exist.
+    First a thread-parallel ``prange`` pass builds the per-sample response columns
+    ``ac2 = rho*cos2psi``, ``as2 = rho*sin2psi`` and ``wy = det_weight*tod`` (the trig
+    is the dominant per-sample cost and is embarrassingly parallel). Then a single
+    serial scatter pass reads ``pix`` once and does all 9 adds — kept serial because
+    different samples may target the same pixel (a parallel scatter would race).
     """
-    for i in range(pix.shape[0]):
+    n = pix.shape[0]
+    ac2 = np.empty(n)
+    as2 = np.empty(n)
+    wy = np.empty(n)
+    for i in _prange(n):
+        two = 2.0 * psi[i]
+        ac2[i] = rho * math.cos(two)
+        as2[i] = rho * math.sin(two)
+        wy[i] = w * tod[i]
+    for i in range(n):
         p = pix[i]
         a = ac2[i]
         b = as2[i]
@@ -84,16 +97,14 @@ def accumulate_tqu_matrix(
     if pix.size == 0:
         return
 
-    w = float(det_weight)
-    r = float(rho)
-    # Polarised response columns carry rho; the intensity column does not. ac2/as2 and
-    # wy are built vectorised, then a single fused numba pass does all 9 scatter-adds
-    # (A = [1, rho*cos2psi, rho*sin2psi]; upper triangle = A^T N^-1 A, lower = A^T N^-1 d).
-    ac2 = r * np.cos(2.0 * psi)
-    as2 = r * np.sin(2.0 * psi)
-    wy = w * np.asarray(tod, dtype=np.float64)
+    # Response columns ac2 = rho*cos2psi, as2 = rho*sin2psi (rho on the polarised
+    # columns only) and wy = det_weight*tod are built in a parallel pass inside the
+    # kernel; the scatter (A = [1, ac2, as2]; upper triangle = A^T N^-1 A, lower =
+    # A^T N^-1 d) is then done in a single serial pass.
     pix64 = np.ascontiguousarray(pix, dtype=np.int64)
-    _accumulate_tqu_jit(matrix, pix64, ac2, as2, w, wy)
+    psi64 = np.ascontiguousarray(psi, dtype=np.float64)
+    tod64 = np.ascontiguousarray(tod, dtype=np.float64)
+    _accumulate_tqu_jit(matrix, pix64, psi64, tod64, float(det_weight), float(rho))
 
 
 def solve_tqu_from_matrix(

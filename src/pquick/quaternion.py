@@ -203,7 +203,7 @@ def upsample_quaternions(
 # Fused bore × detector → (theta, phi, psi)  —  hot-path kernel
 # ---------------------------------------------------------------------------
 
-@_njit(fastmath=True, cache=True)
+@_njit(fastmath=True, cache=True, parallel=True)
 def _bore_det_to_angles_jit(
     q_bore: np.ndarray,
     det_quat: np.ndarray,
@@ -211,10 +211,13 @@ def _bore_det_to_angles_jit(
     phi: np.ndarray,
     psi: np.ndarray,
 ) -> None:
-    """Numba JIT kernel: fused quat-product + normalise + angles, no temporaries."""
+    """Numba JIT kernel: fused quat-product + normalise + angles, no temporaries.
+
+    Each sample writes distinct output rows, so the loop runs over ``numba.prange``
+    (thread count from ``numba.set_num_threads``)."""
     dx = det_quat[0]; dy = det_quat[1]; dz = det_quat[2]; dw = det_quat[3]
     TWO_PI = 2.0 * math.pi
-    for i in range(q_bore.shape[0]):
+    for i in _prange(q_bore.shape[0]):
         qx0 = q_bore[i, 0]; qy0 = q_bore[i, 1]
         qz0 = q_bore[i, 2]; qw0 = q_bore[i, 3]
 
