@@ -107,6 +107,77 @@ def accumulate_tqu_matrix(
     _accumulate_tqu_jit(matrix, pix64, psi64, tod64, float(det_weight), float(rho))
 
 
+@_njit(fastmath=True, cache=True, parallel=True)
+def _solve_tqu_jit(
+    matrix: np.ndarray,
+    t_map: np.ndarray,
+    q_map: np.ndarray,
+    u_map: np.ndarray,
+    cond_threshold: float,
+) -> None:
+    """Per-pixel 3x3 polarised solve, in parallel over pixels.
+
+    For each hit pixel (``matrix[p,0,0] > 0``): build the symmetric normal matrix from
+    the upper triangle, reject it if its condition number (``lambda_max/lambda_min`` via
+    the closed-form symmetric-3x3 eigenvalues) is >= ``cond_threshold``, otherwise solve
+    ``A x = rhs`` (rhs in the lower triangle) by cofactor inversion and write T/Q/U.
+    Unwritten pixels keep their pre-filled ``_UNSEEN`` value. Each pixel writes distinct
+    output entries, so the ``prange`` loop is race-free.
+    """
+    two_pi_3 = 2.0 * math.pi / 3.0
+    for p in _prange(matrix.shape[0]):
+        a00 = matrix[p, 0, 0]
+        if a00 <= 0.0:
+            continue
+        a01 = matrix[p, 0, 1]; a02 = matrix[p, 0, 2]
+        a11 = matrix[p, 1, 1]; a12 = matrix[p, 1, 2]; a22 = matrix[p, 2, 2]
+
+        # Eigenvalues of the symmetric 3x3 (Smith's closed form) for the condition number.
+        p1 = a01 * a01 + a02 * a02 + a12 * a12
+        if p1 == 0.0:
+            lo = min(a00, a11, a22)
+            hi = max(a00, a11, a22)
+        else:
+            q = (a00 + a11 + a22) / 3.0
+            p2 = (a00 - q) ** 2 + (a11 - q) ** 2 + (a22 - q) ** 2 + 2.0 * p1
+            pp = math.sqrt(p2 / 6.0)
+            b00 = (a00 - q) / pp; b11 = (a11 - q) / pp; b22 = (a22 - q) / pp
+            b01 = a01 / pp; b02 = a02 / pp; b12 = a12 / pp
+            detb = (
+                b00 * (b11 * b22 - b12 * b12)
+                - b01 * (b01 * b22 - b12 * b02)
+                + b02 * (b01 * b12 - b11 * b02)
+            )
+            r = detb / 2.0
+            if r <= -1.0:
+                phi = math.pi / 3.0
+            elif r >= 1.0:
+                phi = 0.0
+            else:
+                phi = math.acos(r) / 3.0
+            hi = q + 2.0 * pp * math.cos(phi)
+            lo = q + 2.0 * pp * math.cos(phi + two_pi_3)
+
+        if lo <= 0.0 or hi / lo >= cond_threshold:
+            continue
+
+        # Solve A x = rhs (rhs = lower triangle) via cofactor inverse of the symmetric A.
+        r0 = matrix[p, 1, 0]; r1 = matrix[p, 2, 0]; r2 = matrix[p, 2, 1]
+        c00 = a11 * a22 - a12 * a12
+        c01 = a02 * a12 - a01 * a22
+        c02 = a01 * a12 - a02 * a11
+        det = a00 * c00 + a01 * c01 + a02 * c02
+        if det == 0.0:
+            continue
+        c11 = a00 * a22 - a02 * a02
+        c12 = a01 * a02 - a00 * a12
+        c22 = a00 * a11 - a01 * a01
+        inv = 1.0 / det
+        t_map[p] = (c00 * r0 + c01 * r1 + c02 * r2) * inv
+        q_map[p] = (c01 * r0 + c11 * r1 + c12 * r2) * inv
+        u_map[p] = (c02 * r0 + c12 * r1 + c22 * r2) * inv
+
+
 def solve_tqu_from_matrix(
     matrix: np.ndarray,
     cond_threshold: float = 1e10,
@@ -122,8 +193,8 @@ def solve_tqu_from_matrix(
         matrix: Accumulated normal-equation array of shape ``(npix, 3, 3)`` from
             :func:`accumulate_tqu_matrix`.
         cond_threshold: Pixels whose matrix condition number exceeds this value are masked.
-        batch_size: Number of hit pixels to process per batch. Reduce this to lower peak
-            memory at the cost of slightly more Python overhead.
+        batch_size: Unused; retained for backward compatibility. The solve now runs as a
+            single in-place thread-parallel pass over pixels (no per-batch matrix copies).
 
     Returns:
         Tuple ``(t_map, q_map, u_map)`` of float64 HEALPix maps.
@@ -133,39 +204,7 @@ def solve_tqu_from_matrix(
     q_map = np.full(npix, _UNSEEN, dtype=np.float64)
     u_map = np.full(npix, _UNSEEN, dtype=np.float64)
 
-    hit_idx = np.where(matrix[:, 0, 0] > 0)[0]
-    if hit_idx.size == 0:
-        return t_map, q_map, u_map
-
-    for start in range(0, hit_idx.size, batch_size):
-        batch_idx = hit_idx[start : start + batch_size]
-
-        # Fancy-indexed copy of this batch only (small, ~72 MB for 1 M pixels).
-        A = matrix[batch_idx].copy()  # (batch, 3, 3)
-
-        # Extract the RHS from the lower-left triangle before symmetrising.
-        rhs = np.stack([A[:, 1, 0], A[:, 2, 0], A[:, 2, 1]], axis=1)  # (batch, 3)
-
-        # Symmetrize the normal matrices in-place.
-        A[:, 1, 0] = A[:, 0, 1]
-        A[:, 2, 0] = A[:, 0, 2]
-        A[:, 2, 1] = A[:, 1, 2]
-
-        # Condition check via eigvalsh (symmetric matrices): faster than SVD-based cond.
-        eigs = np.linalg.eigvalsh(A)  # (batch, 3), ascending order
-        min_eig = eigs[:, 0]
-        max_eig = eigs[:, -1]
-        with np.errstate(divide="ignore", invalid="ignore"):
-            cond = np.where(min_eig > 0, max_eig / min_eig, np.inf)
-        good = cond < cond_threshold
-        if not np.any(good):
-            continue
-
-        sol = np.linalg.solve(A[good], rhs[good, :, np.newaxis]).squeeze(-1)  # (n_good, 3)
-        idx_good = batch_idx[good]
-        t_map[idx_good] = sol[:, 0]
-        q_map[idx_good] = sol[:, 1]
-        u_map[idx_good] = sol[:, 2]
+    _solve_tqu_jit(np.ascontiguousarray(matrix, dtype=np.float64), t_map, q_map, u_map, float(cond_threshold))
 
     return t_map, q_map, u_map
 
