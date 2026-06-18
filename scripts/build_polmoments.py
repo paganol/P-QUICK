@@ -198,13 +198,17 @@ def _resolve_detectors(args: argparse.Namespace, cfg, all_dets: list[str]) -> li
 
 
 def build_detector(cfg, det, quat, od_paths, nside, out_dir, chunk, use_flags, bad_rings,
-                   fb=DEFAULT_FEEDBACK, comm=None, rank=0, size=1):
+                   fb=DEFAULT_FEEDBACK, comm=None, rank=0, size=1, psi_pol_rad=0.0):
     """Accumulate and write polmoments for ONE detector.
 
     ODs are partitioned round-robin across MPI ranks; each rank accumulates its
     subset, the maps are sum-reduced to rank 0, which writes them. Only this one
     detector's 13 maps are in memory at a time, so the footprint is independent of
     the number of detectors (~4.9 GB at nside 2048, ~0.08 GB at nside 256).
+
+    ``psi_pol_rad`` is the detector polarisation angle; it is added to the scan
+    orientation so the moments are in qp_planck's (psi_uv + psi_pol) frame -- see
+    the psi assignment in the OD loop.
     """
     npix = hp.nside2npix(nside)
     fbe = fb if rank == 0 else -1  # only rank 0 prints
@@ -241,10 +245,17 @@ def build_detector(cfg, det, quat, od_paths, nside, out_dir, chunk, use_flags, b
                 continue
             q_bore = interp.get_boresight_quaternions(s, e - s)[good]
             _theta, _phi, psi = bore_det_to_angles(q_bore, quat)
-            # qp_planck's orientation convention is offset by pi from P-QUICK's
-            # bore_det_to_angles psi. This is invisible to the even (polarised) moments
-            # but flips the odd ones; add pi so all k match qp_planck's polmoments.
-            psi = psi + np.pi
+            # Two convention shifts bring P-QUICK's psi into qp_planck's polmoments frame:
+            #   +pi       : qp_planck's orientation is offset by pi from P-QUICK's
+            #               bore_det_to_angles psi. Invisible to the even (polarised)
+            #               moments, it flips the odd ones so all k match.
+            #   +psi_pol  : P-QUICK's det_quat uses psi_uv only (Pxx frame), but
+            #               qp_planck (toast OpPolMomentsPlanck) builds orientation from
+            #               psi_uv + psi_pol. psi_pol is a rigid rotation about the line
+            #               of sight, so adding it to the extracted psi reproduces that
+            #               frame exactly. Omitting it rotates the k=2/k=4 moments by
+            #               2*psi_pol / 4*psi_pol and shows up in the leakage windows.
+            psi = psi + np.pi + psi_pol_rad
             pix = hp.ang2pix(nside, _theta, _phi).astype(np.int64)  # RING
             hits += np.bincount(pix, minlength=npix)
             for k in range(1, KMAX + 1):
@@ -324,6 +335,9 @@ def main() -> None:
         d: normalize_quaternion(np.asarray(det_meta[d].get("quat", np.array([0.0, 0.0, 0.0, 1.0])), dtype=np.float64))
         for d in detectors
     }
+    # det_quat encodes psi_uv only (Pxx frame); psi_pol is added to the orientation in
+    # build_detector to reach qp_planck's (psi_uv + psi_pol) polmoments frame.
+    psi_pols = {d: float(det_meta[d].get("psi_pol_rad", 0.0)) for d in detectors}
     mission = cfg.inputs.mission_length or "full"
     use_flags = (cfg.inputs.flags is not None) and (not args.no_flags)
     out_dir = Path(cfg.output.output_dir)
@@ -349,7 +363,7 @@ def main() -> None:
     # Detector-outer / OD-parallel: only one detector's maps are resident at a time.
     for det in detectors:
         build_detector(cfg, det, quats[det], od_paths, nside, out_dir, int(args.chunk),
-                       use_flags, bad_rings, fb, comm, rank, size)
+                       use_flags, bad_rings, fb, comm, rank, size, psi_pol_rad=psi_pols[det])
         gc.collect()  # reclaim this detector's maps before the next one allocates
     _vlog(fbe, 0, f"Done -> {out_dir}")
 
