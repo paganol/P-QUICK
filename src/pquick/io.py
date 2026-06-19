@@ -513,7 +513,6 @@ def build_polarized_beam_alm(
     psi_uv_rad: float = 0.0,
     rho_pol: float = 1.0,
     nthreads: int = 0,
-    copolar_beam: str = "exact_spin2",
 ) -> np.ndarray:
     """Build an ideal co-polar polarised beam ``[T, E, B]`` from a scalar Planck blm.
 
@@ -543,15 +542,6 @@ def build_polarized_beam_alm(
         nthreads: Threads for the ducc0 SHTs (``0`` = all cores). The synthesis/analysis
             reproduce ``hp.alm2map`` / ``hp.map2alm(pol=True, iter=3)`` exactly but run
             multi-threaded (healpy's classic backend is single-threaded).
-        copolar_beam: How to build the spin-2 E/B beam from the scalar blm.
-            ``"exact_spin2"`` (default) uses the ``e^{-2i phi}`` real-space construction
-            + ``map2alm(pol=True)``, i.e. the *exact* spin-2 co-polar beam (spin-2 radial
-            functions ``d^l_{m,2}``). ``"scalar"`` instead sets the spin-2 beam multipoles
-            equal to the scalar intensity multipoles (``E = -b^int``, ``B = 0``) with no
-            map round-trip -- reproducing qp_planck's ``ndb=1`` ideal co-polar model
-            (spin-0 radial functions ``d^l_{m,0}``), where all B-leakage emerges from the
-            asymmetric beam scanned over psi. Use ``"scalar"`` to make the convolution
-            consume the identical polarised-beam model as qp_planck's beam matrix.
 
     Returns:
         Complex128 ``(3, nalm)`` ``[T, E, B]`` beam alm at ``(lmax, mmax)``, in the
@@ -570,32 +560,20 @@ def build_polarized_beam_alm(
     # Carry the beam ellipse from Dxx into the Pxx convolution frame (psi_uv = Dxx->Pxx).
     bb_pol = bb * np.exp(1j * emm * float(psi_uv_rad))
 
-    mode = str(copolar_beam).strip().lower()
-    if mode == "exact_spin2":
-        # Ideal co-polar Stokes pattern; the spin-2 E/B follow from map2alm(pol=True). The
-        # pol axis is left at the Pxx x-axis (chi = -2 phi) so it matches the frame the
-        # convolution and map-making read it in (psi_buf, psi_conv_offset = 0). psi_pol is
-        # not applied to the beam alone -- doing so would mismatch the solve and leak E->B.
-        beam_map = _ducc_synthesis(bb_pol, nside, lmax, mmax, spin=0, nthreads=nthreads)[0]
-        phi = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))[1]
-        chi = -2.0 * phi
-        qu = np.array([beam_map * np.cos(chi), beam_map * np.sin(chi)])
-        # Spin-2 E/B analysis. iter=3 is load-bearing: the e^{-2i phi} construction pushes
-        # power just above lmax=2*nside, and the iteration corrects that aliasing. Dropping
-        # to iter=0 with quadrature weights was measured to bias EE/BB by ~3.5% end-to-end;
-        # a higher nside removes the aliasing but is slower, so the iter=3 scheme stays. It
-        # runs on ducc0's threaded SHT (reproduces hp.map2alm(pol=True, iter=3) to ~1e-12).
-        e_alm, b_alm = _beam_eb_iter3(qu, nside, lmax, mmax, nthreads=nthreads)
-    elif mode == "scalar":
-        # qp_planck ndb=1 model: the spin-2 beam multipoles ARE the scalar intensity
-        # multipoles (no map round-trip, spin-0 radial functions). E = -b^int, B = 0; the
-        # asymmetric beam scanned over psi then produces the B-leakage in the convolution,
-        # exactly as qp_planck's b[n+s+/-2] x w_s coupling. Same psi_uv frame as exact mode
-        # so an A/B run isolates only the spin-2-vs-scalar beam construction.
-        e_alm = -bb_pol
-        b_alm = np.zeros_like(bb_pol)
-    else:
-        raise ValueError(f"Unsupported copolar_beam={copolar_beam!r}; expected 'exact_spin2' or 'scalar'")
+    # Ideal co-polar Stokes pattern; the spin-2 E/B follow from map2alm(pol=True). The
+    # pol axis is left at the Pxx x-axis (chi = -2 phi) so it matches the frame the
+    # convolution and map-making read it in (psi_buf, psi_conv_offset = 0). psi_pol is
+    # not applied to the beam alone -- doing so would mismatch the solve and leak E->B.
+    beam_map = _ducc_synthesis(bb_pol, nside, lmax, mmax, spin=0, nthreads=nthreads)[0]
+    phi = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))[1]
+    chi = -2.0 * phi
+    qu = np.array([beam_map * np.cos(chi), beam_map * np.sin(chi)])
+    # Spin-2 E/B analysis. iter=3 is load-bearing: the e^{-2i phi} construction pushes
+    # power just above lmax=2*nside, and the iteration corrects that aliasing. Dropping
+    # to iter=0 with quadrature weights was measured to bias EE/BB by ~3.5% end-to-end;
+    # a higher nside removes the aliasing but is slower, so the iter=3 scheme stays. It
+    # runs on ducc0's threaded SHT (reproduces hp.map2alm(pol=True, iter=3) to ~1e-12).
+    e_alm, b_alm = _beam_eb_iter3(qu, nside, lmax, mmax, nthreads=nthreads)
 
     # Polarisation efficiency: scale E/B by rho to match the rho-weighted map-making
     # (map.use_cross_pol); otherwise EE/BB come out inflated by 1/rho^2.

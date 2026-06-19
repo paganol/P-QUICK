@@ -98,12 +98,6 @@ class ConvolutionConfig:
             convolution cost) at the price of holding one cube per detector resident
             (~0.4 GB at lmax=1024/mmax=6, ~1-2 GB at lmax=2048). Set ``False`` to rebuild
             per OD (lower memory, slower).
-        copolar_beam: How the spin-2 E/B beam is built from the scalar blm
-            (:func:`~pquick.io.build_polarized_beam_alm`). ``"exact_spin2"`` (default) is
-            the exact spin-2 co-polar beam; ``"scalar"`` reproduces qp_planck's ``ndb=1``
-            ideal co-polar model (spin-2 beam = scalar intensity multipoles, ``B=0``), so
-            the convolution consumes the identical polarised beam as qp_planck's beam
-            matrix — use it to A/B the TB/BB/EB leakage against qp_planck.
 
     The scalar Planck blm is always synthesised into a spin-2 ``[T, E, B]`` beam
     (:func:`~pquick.io.build_polarized_beam_alm`): the ellipse is carried Dxx -> Pxx
@@ -117,7 +111,6 @@ class ConvolutionConfig:
     chunks: int = 1
     beam_normalization: str = "unit_integral"
     cache_interpolator: bool = True
-    copolar_beam: str = "exact_spin2"
 
 
 @dataclass
@@ -233,7 +226,6 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
             chunks=int(data.get("convolution", {}).get("chunks", 1)),
             beam_normalization=str(data.get("convolution", {}).get("beam_normalization", "unit_integral")),
             cache_interpolator=bool(data.get("convolution", {}).get("cache_interpolator", True)),
-            copolar_beam=str(data.get("convolution", {}).get("copolar_beam", "exact_spin2")),
         ),
         map=MapConfig(
             nside=int(data["map"]["nside"]),

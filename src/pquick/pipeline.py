@@ -252,7 +252,6 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 float(dmeta.get("rho_pol", 1.0)) if config.map.use_cross_pol else 1.0
             ),
             nthreads=nthreads,
-            copolar_beam=config.convolution.copolar_beam,
         )
         _vprint(
             verbose,
