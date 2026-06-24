@@ -369,7 +369,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
     for od_idx, npz_path in enumerate(local_pointing, start=1):
         _vprint(verbose, rank, f"[OD {od_idx}/{len(local_pointing)}] {npz_path.name}")
-        t_resamp_od = t_conv_od = t_macc_od = 0.0
+        t_resamp_od = t_conv_od = t_macc_od = t_flag_od = 0.0
         _od_wall0 = _time.perf_counter()
 
         _t0 = _time.perf_counter()
@@ -381,6 +381,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         del point_us
         t_resamp_od += _time.perf_counter() - _t0
 
+        _t0 = _time.perf_counter()
         detector_flags: dict[str, np.ndarray] = {}
         use_flag_od = config.inputs.flags is not None
         if use_flag_od:
@@ -414,6 +415,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                         f"{hflag.size} != {interp.n_native}"
                     )
                 detector_flags[det_name] = hflag
+        t_flag_od += _time.perf_counter() - _t0
 
         chunk_samples = max(1, (interp.n_native + n_chunks_cfg - 1) // n_chunks_cfg)
         n_chunks = (interp.n_native + chunk_samples - 1) // chunk_samples
@@ -562,12 +564,12 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         t_macc_total += t_macc_od
         od_wall = _time.perf_counter() - _od_wall0
         t_od_wall_total += od_wall
-        _od_other = od_wall - (t_resamp_od + t_conv_od + t_macc_od)
+        _od_other = od_wall - (t_resamp_od + t_conv_od + t_macc_od + t_flag_od)
         _vprint(
             verbose,
             rank,
             f"  [OD timing] resamp={t_resamp_od:.2f}s  conv={t_conv_od:.2f}s  macc={t_macc_od:.2f}s"
-            f"  other={_od_other:.2f}s  od_wall={od_wall:.2f}s",
+            f"  flag={t_flag_od:.2f}s  other={_od_other:.2f}s  od_wall={od_wall:.2f}s",
         )
 
     _vprint(verbose, rank, f"OD loop done. Reducing matrices across {size} rank(s) …")
