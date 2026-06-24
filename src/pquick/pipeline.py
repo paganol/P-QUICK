@@ -4,15 +4,16 @@ import argparse
 import time as _time
 import warnings
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import healpy as hp
 import numpy as np
 from ducc0.healpix import Healpix_Base
 
 from .config import PipelineConfig, load_config
-from .convolution import convolve_timeline
+from .convolution import build_convolution_interpolator, evaluate_convolution
 from .io import (
+    build_polarized_beam_alm,
     detector_to_beam_file,
     infer_lmax_from_alm,
     load_beam_alm,
@@ -30,14 +31,18 @@ from .quaternion import bore_det_to_angles, bore_det_to_ptg, normalize_quaternio
 from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution, resolve_nthreads
 
 
-def _load_bad_ring_intervals(path: str | Path) -> dict[str, list[tuple[float, float]]]:
+def _load_bad_ring_intervals(path: str | Path) -> dict[str, np.ndarray]:
     """Load a TOAST/NPIPE-style bad-ring interval file.
 
     The file format is plain text with rows:
         ``<det_or_ALL> <tstart_s> <tstop_s>``
     and optional comment lines starting with ``#``.
+
+    Returns one ``(M, 2)`` float64 array of ``[tstart, tstop]`` rows per key, so
+    :func:`_chunk_bad_ring_mask` can filter overlaps with vectorised numpy ops instead
+    of a Python loop over every interval (files can hold >100k intervals).
     """
-    intervals: dict[str, list[tuple[float, float]]] = {}
+    raw: dict[str, list[tuple[float, float]]] = {}
     p = Path(path)
     with p.open("r", encoding="utf-8") as f:
         for iline, line in enumerate(f, start=1):
@@ -52,37 +57,53 @@ def _load_bad_ring_intervals(path: str | Path) -> dict[str, list[tuple[float, fl
             tstop = float(parts[2])
             if tstop < tstart:
                 tstart, tstop = tstop, tstart
-            intervals.setdefault(det_key, []).append((tstart, tstop))
-    return intervals
+            raw.setdefault(det_key, []).append((tstart, tstop))
+    return {k: np.asarray(v, dtype=np.float64).reshape(-1, 2) for k, v in raw.items()}
 
 
 def _chunk_bad_ring_mask(
-    intervals: dict[str, list[tuple[float, float]]] | None,
+    intervals: dict[str, np.ndarray] | None,
     det_name: str,
     coarse_t0_ns: float,
     native_rate_hz: float,
     chunk_start: int,
     chunk_len: int,
 ) -> np.ndarray:
-    """Return a boolean mask of bad samples for one chunk and detector."""
+    """Return a boolean mask of bad samples for one chunk and detector.
+
+    ``times[i] = t0_s + i*dt_s`` is monotonic, so each interval maps to a contiguous
+    index range ``[ceil((tstart-t0)/dt), floor((tstop-t0)/dt)]`` — computed analytically
+    with no per-sample comparison. The overlap test and index conversion are vectorised
+    over the whole interval table (>100k rows) at once; only the few intervals that
+    actually fall in this chunk are written.
+    """
     if not intervals:
         return np.zeros(chunk_len, dtype=bool)
 
-    det_key = det_name.upper()
-    det_intervals = intervals.get(det_key, []) + intervals.get("ALL", [])
-    if not det_intervals:
-        return np.zeros(chunk_len, dtype=bool)
+    parts = [a for a in (intervals.get(det_name.upper()), intervals.get("ALL")) if a is not None]
+    out = np.zeros(chunk_len, dtype=bool)
+    if not parts:
+        return out
+    iv = parts[0] if len(parts) == 1 else np.concatenate(parts, axis=0)
 
     dt_s = 1.0 / float(native_rate_hz)
     t0_s = float(coarse_t0_ns) * 1.0e-9 + float(chunk_start) * dt_s
-    times = t0_s + dt_s * np.arange(chunk_len, dtype=np.float64)
+    t_last = t0_s + (chunk_len - 1) * dt_s
 
-    out = np.zeros(chunk_len, dtype=bool)
-    t_first = float(times[0])
-    t_last = float(times[-1])
-    for tstart, tstop in det_intervals:
-        if tstart <= t_last and tstop >= t_first:
-            out |= (times >= tstart) & (times <= tstop)
+    starts = iv[:, 0]
+    stops = iv[:, 1]
+    over = (starts <= t_last) & (stops >= t0_s)
+    if not np.any(over):
+        return out
+
+    inv_dt = float(native_rate_hz)
+    i0 = np.ceil((starts[over] - t0_s) * inv_dt).astype(np.int64)
+    i1 = np.floor((stops[over] - t0_s) * inv_dt).astype(np.int64) + 1
+    np.clip(i0, 0, chunk_len, out=i0)
+    np.clip(i1, 0, chunk_len, out=i1)
+    for a, b in zip(i0.tolist(), i1.tolist()):
+        if b > a:
+            out[a:b] = True
     return out
 
 
@@ -183,11 +204,27 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     numba.set_num_threads(nthreads)
     _vprint(verbose, rank, f"[Threads] nthreads={nthreads} (ducc0 + numba)")
 
+    # Wall-clock anchor for the whole run (everything after MPI/import startup). The
+    # per-section timers below (resamp/conv/macc/reduce/solve) only instrument specific
+    # blocks; t_wall0 lets the summary report the true elapsed time and an "other"
+    # bucket (setup, flag I/O, masking, boresight copies, output write) so the printed
+    # accounting reconciles with a stopwatch around the process.
+    t_wall0 = _time.perf_counter()
+
     sky_alm = load_sky_alm(config.inputs.sky_alm)
     lmax_alm = infer_lmax_from_alm(sky_alm)
     if config.convolution.lmax > lmax_alm:
         raise ValueError(f"Configured lmax={config.convolution.lmax} exceeds sky alm lmax={lmax_alm}")
     sky_alm = truncate_alm(sky_alm, lmax_alm, config.convolution.lmax)
+
+    # Per-component (T,E,B) input rescale (debug knob, e.g. [1,0,0] for T-only).
+    rescale = config.inputs.rescale
+    if rescale != (1.0, 1.0, 1.0):
+        sky_alm = np.array(sky_alm, dtype=np.complex128, copy=True)
+        for i in range(min(3, sky_alm.shape[0])):
+            if rescale[i] != 1.0:
+                sky_alm[i] *= rescale[i]
+        _vprint(verbose, rank, f"[Inputs] sky alm rescaled by (T,E,B) = {tuple(rescale)}")
 
     det_meta = load_rimo_detectors(config.inputs.rimo_file)
     detectors = select_detectors(list(det_meta.keys()), config.detector_selection)
@@ -200,11 +237,32 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             lmax=config.convolution.lmax,
             mmax=config.convolution.mmax,
         )
+        dmeta = det_meta.get(det, {})
+        psi_pol_rad = float(dmeta.get("psi_pol_rad", 0.0))
+        # Scalar Planck blm (Dxx) -> spin-2 polarised [T, E, B] beam in the Pxx frame.
+        beam_alm = build_polarized_beam_alm(
+            beam_alm,
+            psi_pol_rad=psi_pol_rad,
+            lmax=config.convolution.lmax,
+            mmax=config.convolution.mmax,
+            psi_uv_rad=float(dmeta.get("psi_uv_rad", 0.0)),
+            # Match the map-making polarisation efficiency so EE/BB are not
+            # inflated by 1/rho^2 (1.0 when use_cross_pol is off).
+            rho_pol=(
+                float(dmeta.get("rho_pol", 1.0)) if config.map.use_cross_pol else 1.0
+            ),
+            nthreads=nthreads,
+        )
+        _vprint(
+            verbose,
+            rank,
+            f"  [beam] {det}: spin-2 polarised [T,E,B] beam built "
+            f"(ncomp={beam_alm.shape[0]}, psi_pol={np.degrees(psi_pol_rad):.3f} deg)",
+        )
         beam_alm = normalize_beam_alm(
             beam_alm,
             mode=config.convolution.beam_normalization,
         )
-        dmeta = det_meta.get(det, {})
         dquat = normalize_quaternion(
             np.asarray(dmeta.get("quat", np.array([0.0, 0.0, 0.0, 1.0])), dtype=np.float64)
         )
@@ -214,6 +272,13 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 "beam_alm": beam_alm,
                 "quat": dquat,
                 "weight": detector_map_weight(det),
+                "psi_pol_rad": psi_pol_rad,
+                "psi_uv_rad": float(dmeta.get("psi_uv_rad", 0.0)),
+                "rho_pol": (
+                    float(dmeta.get("rho_pol", 1.0))
+                    if config.map.use_cross_pol
+                    else 1.0
+                ),
             }
         )
 
@@ -221,7 +286,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     od_start, od_end = parse_mission_length(mission)
     all_pointing = build_pointing_file_paths(config.inputs.pointings, od_start, od_end)
 
-    bad_ring_intervals: dict[str, list[tuple[float, float]]] | None = None
+    bad_ring_intervals: dict[str, np.ndarray] | None = None
     if config.inputs.bad_rings_file is not None:
         bad_ring_intervals = _load_bad_ring_intervals(config.inputs.bad_rings_file)
         _vprint(
@@ -285,11 +350,27 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     n_chunks_cfg = int(max(1, config.convolution.chunks))
 
 
+    # Everything from sky load through beam build / MPI distribution / allocation is
+    # one-time setup, untimed by the per-section timers.
+    t_setup = _time.perf_counter() - t_wall0
+
     t_resamp_total = t_conv_total = t_macc_total = 0.0
+    t_od_wall_total = 0.0
+
+    # The ducc0 convolution cube depends only on (sky, beam, lmax, mmax, epsilon) — not on
+    # the pointing — so (when config.convolution.cache_interpolator) build it once per
+    # detector and reuse across every OD/chunk on this rank. Building the cube is the
+    # dominant convolution cost; reuse keeps one cube resident per detector (~0.4 GB at
+    # lmax=1024/mmax=6, ~1–2 GB at lmax=2048). Disable for lower memory at the cost of a
+    # per-OD rebuild.
+    cache_interp = bool(config.convolution.cache_interpolator)
+    beam_interp_cache: dict[str, Any] = {}
+    _vprint(verbose, rank, f"[Convolution] cache_interpolator={cache_interp}")
 
     for od_idx, npz_path in enumerate(local_pointing, start=1):
         _vprint(verbose, rank, f"[OD {od_idx}/{len(local_pointing)}] {npz_path.name}")
         t_resamp_od = t_conv_od = t_macc_od = 0.0
+        _od_wall0 = _time.perf_counter()
 
         _t0 = _time.perf_counter()
         point_us = load_pointing_npz(npz_path)
@@ -384,6 +465,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 beam_alm = np.asarray(dinfo["beam_alm"], dtype=np.complex128)
                 det_weight = cast(float, dinfo["weight"])
                 det_name = str(dinfo["name"])
+                rho_pol = cast(float, dinfo["rho_pol"])
 
                 _vprint(
                     verbose,
@@ -417,11 +499,18 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
                 q_bore_good = q_bore_all if ngood == chunk_len else q_bore_all[good]
 
-                # Fill pre-allocated buffers directly — no temporary arrays.
-                # ptg_buf[:, 0/1/2] = theta / phi / (psi - pi/2)  (ducc0 Ludwig-III offset)
-                # psi_buf[:] = psi  (polarisation angle for mapmaking, without offset)
+                # Fill pre-allocated buffers directly — no temporary arrays. det_quat is
+                # built from psi_uv only, so psi_buf is the Pxx (polarisation-frame)
+                # angle used directly for mapmaking. The [T,E,B] beam is already rotated
+                # to Pxx in build_polarized_beam_alm, so convolve at psi_pxx = psi_buf
+                # (offset 0) and the beam, convolution and map-making share that frame.
                 _t0 = _time.perf_counter()
-                bore_det_to_ptg(q_bore_good, det_quat, ptg_buf[:ngood], psi_buf[:ngood])
+                bore_det_to_ptg(
+                    q_bore_good,
+                    det_quat,
+                    ptg_buf[:ngood],
+                    psi_buf[:ngood],
+                )
                 t_resamp_od += _time.perf_counter() - _t0
 
                 pix_center = None
@@ -432,19 +521,23 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                         ptg_buf[:ngood, :2],
                         nthreads=nthreads,
                     )
-                    ptg_buf[:ngood, :2] = hpx_center.pix2ang(pix_center)
+                    ptg_buf[:ngood, :2] = hpx_center.pix2ang(pix_center, nthreads=nthreads)
 
                 _t0 = _time.perf_counter()
-                tod = convolve_timeline(
-                    sky_alm=sky_alm,
-                    beam_alm=beam_alm,
-                    ptg_thetaphipsi=ptg_buf[:ngood],
-                    lmax=config.convolution.lmax,
-                    mmax=config.convolution.mmax,
-                    nthreads=nthreads,
-                    epsilon=config.convolution.epsilon,
-                    interpolator_cache=None,
-                )
+                conv_interp = beam_interp_cache.get(det_name) if cache_interp else None
+                if conv_interp is None:
+                    conv_interp = build_convolution_interpolator(
+                        sky_alm,
+                        beam_alm,
+                        lmax=config.convolution.lmax,
+                        mmax=config.convolution.mmax,
+                        nthreads=nthreads,
+                        epsilon=config.convolution.epsilon,
+                        npoints=chunk_samples,
+                    )
+                    if cache_interp:
+                        beam_interp_cache[det_name] = conv_interp
+                tod = evaluate_convolution(conv_interp, ptg_buf[:ngood])
                 t_conv_od += _time.perf_counter() - _t0
 
                 _t0 = _time.perf_counter()
@@ -455,8 +548,10 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                         ptg_buf[:ngood, :2],
                         nthreads=nthreads,
                     )
-                accumulate_tqu_matrix(matrix_acc, pix, psi_buf[:ngood], np.asarray(tod, dtype=np.float64), det_weight)
-                np.add.at(hits_acc, pix, 1)
+                accumulate_tqu_matrix(matrix_acc, pix, psi_buf[:ngood], np.asarray(tod, dtype=np.float64), det_weight, rho=rho_pol)
+                # bincount is a single C-level pass, much faster than np.add.at's
+                # unbuffered scatter for the per-pixel hit count.
+                hits_acc += np.bincount(pix, minlength=hits_acc.shape[0]).astype(hits_acc.dtype, copy=False)
                 del pix, tod
                 t_macc_od += _time.perf_counter() - _t0
 
@@ -465,11 +560,14 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         t_resamp_total += t_resamp_od
         t_conv_total += t_conv_od
         t_macc_total += t_macc_od
+        od_wall = _time.perf_counter() - _od_wall0
+        t_od_wall_total += od_wall
+        _od_other = od_wall - (t_resamp_od + t_conv_od + t_macc_od)
         _vprint(
             verbose,
             rank,
             f"  [OD timing] resamp={t_resamp_od:.2f}s  conv={t_conv_od:.2f}s  macc={t_macc_od:.2f}s"
-            f"  od_total={t_resamp_od + t_conv_od + t_macc_od:.2f}s",
+            f"  other={_od_other:.2f}s  od_wall={od_wall:.2f}s",
         )
 
     _vprint(verbose, rank, f"OD loop done. Reducing matrices across {size} rank(s) …")
@@ -482,15 +580,19 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     _vprint(verbose, rank, f"Reduce done in {t_reduce:.2f}s. Solving T/Q/U …")
 
     if rank != 0:
+        _od_other_total = t_od_wall_total - (t_resamp_total + t_conv_total + t_macc_total)
+        _wall = _time.perf_counter() - t_wall0
         _vprint(
             verbose,
             rank,
             f"[Timing summary]"
+            f"  setup={t_setup:.2f}s"
             f"  resamp={t_resamp_total:.2f}s"
             f"  conv={t_conv_total:.2f}s"
             f"  macc={t_macc_total:.2f}s"
+            f"  od_other={_od_other_total:.2f}s"
             f"  reduce={t_reduce:.2f}s"
-            f"  total={t_resamp_total + t_conv_total + t_macc_total + t_reduce:.2f}s",
+            f"  wall={_wall:.2f}s",
         )
         return None
 
@@ -499,17 +601,6 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     _t0 = _time.perf_counter()
     t_map, q_map, u_map = solve_tqu_from_matrix(matrix_all)
     t_solve = _time.perf_counter() - _t0
-    _vprint(
-        verbose,
-        rank,
-        f"[Timing summary]"
-        f"  resamp={t_resamp_total:.2f}s"
-        f"  conv={t_conv_total:.2f}s"
-        f"  macc={t_macc_total:.2f}s"
-        f"  reduce={t_reduce:.2f}s"
-        f"  solve={t_solve:.2f}s"
-        f"  total={t_resamp_total + t_conv_total + t_macc_total + t_reduce + t_solve:.2f}s",
-    )
     nobs00 = matrix_all[:, 0, 0]
 
     outdir = Path(config.output.output_dir)
@@ -521,6 +612,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     wpol_path = outdir / f"{prefix}_wpol.fits"
     nobs_path = outdir / f"{prefix}_nobs00.fits"
 
+    _t0 = _time.perf_counter()
     hp.write_map(
         str(map_path),
         [t_map, q_map, u_map],
@@ -531,6 +623,33 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     hp.write_map(str(hits_path), hits_all.astype(np.float64), overwrite=True, dtype=np.float64, nest=config.map.nest)
     hp.write_map(str(wpol_path), nobs00, overwrite=True, dtype=np.float64, nest=config.map.nest)
     hp.write_map(str(nobs_path), nobs00, overwrite=True, dtype=np.float64, nest=config.map.nest)
+    t_write = _time.perf_counter() - _t0
+
+    # Reconcile against the stopwatch: wall is the true elapsed time inside run_pipeline;
+    # the section timers (resamp/conv/macc/reduce/solve/write) plus setup and od_other
+    # (per-OD flag I/O, sample masking, boresight copies) should sum to it, leaving only
+    # a small "unaccounted" remainder (import-triggered lazy work, GC, etc.).
+    od_other_total = t_od_wall_total - (t_resamp_total + t_conv_total + t_macc_total)
+    wall = _time.perf_counter() - t_wall0
+    accounted = (
+        t_setup + t_resamp_total + t_conv_total + t_macc_total
+        + od_other_total + t_reduce + t_solve + t_write
+    )
+    _vprint(
+        verbose,
+        rank,
+        f"[Timing summary]"
+        f"  setup={t_setup:.2f}s"
+        f"  resamp={t_resamp_total:.2f}s"
+        f"  conv={t_conv_total:.2f}s"
+        f"  macc={t_macc_total:.2f}s"
+        f"  od_other={od_other_total:.2f}s"
+        f"  reduce={t_reduce:.2f}s"
+        f"  solve={t_solve:.2f}s"
+        f"  write={t_write:.2f}s"
+        f"  unaccounted={wall - accounted:.2f}s"
+        f"  wall={wall:.2f}s",
+    )
 
     return map_path
 

@@ -11,6 +11,8 @@ def test_match_component_count_promotes_scalar_beam_to_temperature_only():
 
     assert new_sky.shape == (3, 10)
     assert new_beam.shape == (3, 6)
+    # ducc0 beam slots 1-2 are spin-2 (polarised), not Q/U: the scalar beam goes
+    # in the temperature slot only; copying it into 1-2 leaks E into T.
     assert np.allclose(new_beam[0], 1.0)
     assert np.allclose(new_beam[1], 0.0)
     assert np.allclose(new_beam[2], 0.0)

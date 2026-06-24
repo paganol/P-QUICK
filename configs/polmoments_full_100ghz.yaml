@@ -1,0 +1,19 @@
+# Config for scripts/build_polmoments.py — builds per-detector qp_planck-format
+# polmoments from the P-QUICK scan. Only the blocks below are read.
+inputs:
+  rimo_file: /g100_work/INF26_litebird_1/lpagano0/beam_windows_planck/generate_planck_sims/P-QUICK/inputs/RIMOs/RIMO_HFI_npipe5v16_symmetrized.fits
+  pointings: /g100_work/INF26_litebird_1/lpagano0/beam_windows_planck/generate_planck_sims/P-QUICK/inputs/pointings/pointing_
+  flags: /g100_work/INF26_litebird_1/lpagano0/beam_windows_planck/generate_planck_sims/P-QUICK/inputs/flags/flags_
+  bad_rings_file: /g100_work/INF26_litebird_1/lpagano0/beam_windows_planck/generate_planck_sims/P-QUICK/inputs/hfi_bad_intervals.txt
+  mission_length: full
+
+detector_selection:
+  channel: 100ghz
+  detectors: null
+
+resampling:
+  coordinate_system: galactic
+
+output:
+  nside: 2048
+  output_dir: outputs/polmoments_100ghz

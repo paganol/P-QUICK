@@ -22,10 +22,17 @@ convolution:
   epsilon: 1.0e-5
   chunks: 1
   beam_normalization: unit_integral
+  # Diagnostic only: constant offset (deg) added to the convolution psi (beam
+  # orientation), not the map-making psi. Keep 0.0 for production.
+  extra_psi_deg: 0.0
 
 map:
   nside: 512
   nest: false
+  # use_cross_pol: true weights the map-making polarisation response by the
+  # per-detector rho = (1-eps)/(1+eps) from the RIMO (= qp_planck rhohit: IMO).
+  # false = ideal detectors, rho = 1 (= qp_planck rhohit: Ideal). T is unaffected.
+  use_cross_pol: true
 
 output:
   output_dir: outputs

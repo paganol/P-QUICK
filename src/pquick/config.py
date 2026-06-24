@@ -44,6 +44,11 @@ class InputsConfig:
         bad_rings_file: Optional path to a TOAST/NPIPE-style bad-ring interval
             text file with rows ``<det_or_ALL> <tstart_s> <tstop_s>``.
             Intervals are applied on top of existing flags.
+        rescale: Per-component multipliers ``(x, y, z)`` applied to the input sky
+            ``(almT, almE, almB)`` before convolution. ``None`` (default) means
+            ``(1, 1, 1)`` (no rescaling); a scalar ``s`` means ``(s, s, s)``. Useful
+            for isolating components, e.g. ``[1, 0, 0]`` -> T-only, ``[0, 1, 0]`` ->
+            E-only.
     """
 
     sky_alm: str
@@ -53,6 +58,7 @@ class InputsConfig:
     pointings: str = "inputs/pointings/pointing_"
     flags: str | None = None
     bad_rings_file: str | None = None
+    rescale: tuple[float, float, float] = (1.0, 1.0, 1.0)
 
 
 @dataclass
@@ -85,6 +91,18 @@ class ConvolutionConfig:
             divides by ``sqrt(4 pi) b_00`` so a constant-sky input remains constant
             after convolution. ``"raw"`` uses the beam coefficients exactly as stored
             in the FITS file.
+        cache_interpolator: If ``True`` (default), build each detector's ducc0
+            convolution cube once and reuse it across every OD/chunk on the rank. The
+            cube depends only on the sky, beam, ``lmax``, ``mmax`` and ``epsilon`` — not
+            on the pointing — so this removes a redundant per-OD rebuild (the dominant
+            convolution cost) at the price of holding one cube per detector resident
+            (~0.4 GB at lmax=1024/mmax=6, ~1-2 GB at lmax=2048). Set ``False`` to rebuild
+            per OD (lower memory, slower).
+
+    The scalar Planck blm is always synthesised into a spin-2 ``[T, E, B]`` beam
+    (:func:`~pquick.io.build_polarized_beam_alm`): the ellipse is carried Dxx -> Pxx
+    by ``psi_uv`` so a horn's two PSB arms co-orient in the common Pxx frame, and the
+    beam, convolution and map-making all share that frame.
     """
 
     lmax: int
@@ -92,6 +110,7 @@ class ConvolutionConfig:
     epsilon: float = 1e-5
     chunks: int = 1
     beam_normalization: str = "unit_integral"
+    cache_interpolator: bool = True
 
 
 @dataclass
@@ -101,10 +120,15 @@ class MapConfig:
     Attributes:
         nside: HEALPix resolution parameter of the output map.
         nest: If ``True``, write maps in NESTED ordering instead of the default RING ordering.
+        use_cross_pol: If ``True`` (default), weight the map-making polarisation response
+            by the per-detector ``rho = (1 - eps)/(1 + eps)`` from the RIMO (matches
+            qp_planck ``rhohit: IMO``). If ``False``, assume ideal detectors (``rho = 1``,
+            qp_planck ``rhohit: Ideal``). Does not affect the temperature map.
     """
 
     nside: int
     nest: bool = False
+    use_cross_pol: bool = True
 
 
 @dataclass
@@ -146,6 +170,23 @@ class PipelineConfig:
     nthreads: int = 0
 
 
+def _parse_rescale(value: Any) -> tuple[float, float, float]:
+    """Parse ``inputs.rescale`` into a (T, E, B) multiplier triple.
+
+    ``None`` -> ``(1, 1, 1)``; a scalar ``s`` -> ``(s, s, s)``; a 3-element
+    sequence ``[x, y, z]`` -> ``(x, y, z)``.
+    """
+    if value is None:
+        return (1.0, 1.0, 1.0)
+    if isinstance(value, (int, float)):
+        s = float(value)
+        return (s, s, s)
+    seq = list(value)
+    if len(seq) != 3:
+        raise ValueError(f"inputs.rescale must be null, a scalar, or 3 numbers; got {value!r}")
+    return tuple(float(x) for x in seq)  # type: ignore[return-value]
+
+
 def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
     detsel = data.get("detector_selection") or {}
     map_cfg = data.get("map", {}) or {}
@@ -168,6 +209,7 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
                 if data["inputs"].get("bad_rings_file") is not None
                 else None
             ),
+            rescale=_parse_rescale(data["inputs"].get("rescale")),
         ),
         detector_selection=DetectorSelection(
             channel=channel,
@@ -183,10 +225,12 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
             epsilon=float(data.get("convolution", {}).get("epsilon", 1e-5)),
             chunks=int(data.get("convolution", {}).get("chunks", 1)),
             beam_normalization=str(data.get("convolution", {}).get("beam_normalization", "unit_integral")),
+            cache_interpolator=bool(data.get("convolution", {}).get("cache_interpolator", True)),
         ),
         map=MapConfig(
             nside=int(data["map"]["nside"]),
             nest=bool(map_cfg.get("nest", False)),
+            use_cross_pol=bool(map_cfg.get("use_cross_pol", True)),
         ),
         output=OutputConfig(
             output_dir=str(output_cfg.get("output_dir", "outputs")),

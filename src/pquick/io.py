@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import ducc0
+import ducc0.sht.experimental as _sht
 import healpy as hp
 import numpy as np
 from astropy.io import fits
@@ -211,9 +213,13 @@ def _rimo_detector_quat(
     psi_uv_deg: float,
     psi_pol_deg: float = 0.0,
 ) -> np.ndarray:
-    """Build the ZYZ-convention detector quaternion for the Dxx beam frame.
+    """Build the ZYZ-convention detector quaternion for the Pxx polarization frame.
 
-    The Dxx (beam) frame requires the full rotation angle ``psi_uv + psi_pol``.
+    Uses ``psi_uv`` only (without ``psi_pol``) so that extracted psi is the
+    polarization-frame (Pxx) angle used for mapmaking I/Q/U weights.  The Dxx
+    beam-frame angle for convolution is obtained by adding ``psi_pol`` as a
+    separate offset in the timeline pointing construction.
+
     Following toast-npipe utilities.load_RIMO, the ZYZ quaternion is left-multiplied
     by SPINROT = rotation(Y, pi/2 - 85deg) to account for the 85° Planck spin angle:
     in the pointing-file frame (X=spin axis, Z≈LOS), the nominal boresight sits at
@@ -222,8 +228,8 @@ def _rimo_detector_quat(
     degree = np.pi / 180.0
     phi = phi_uv_deg * degree
     theta = theta_uv_deg * degree
-    # psi_uv + psi_pol gives the Dxx orientation; subtract phi per ZYZ convention
-    psi = (psi_uv_deg + psi_pol_deg) * degree - phi
+    # Pxx frame: psi_uv only, subtract phi per ZYZ convention
+    psi = psi_uv_deg * degree - phi
 
     quat = np.zeros(4, dtype=np.float64)
     quat[3] = np.cos(0.5 * theta) * np.cos(0.5 * (phi + psi))
@@ -237,7 +243,7 @@ def _rimo_detector_quat(
     cy = np.cos(_spin_half)
     # SPINROT ⊗ quat  (left-multiply), convention (x,y,z,w)
     qx, qy, qz, qw = quat[0], quat[1], quat[2], quat[3]
-    out = np.array([
+    out: np.ndarray[tuple[Any, ...], np.dtype[Unknown]] = np.array([
          cy * qx + sy * qz,
          cy * qy + sy * qw,  # w1*y2 - x1*z2 + y1*w2 + z1*x2 with x1=z1=0
          cy * qz - sy * qx,
@@ -272,6 +278,7 @@ def load_rimo_detectors(rimo_path: str | Path) -> dict[str, dict[str, np.ndarray
         has_theta = "THETA_UV" in names
         has_psi = "PSI_UV" in names
         has_psi_pol = "PSI_POL" in names
+        has_eps = "EPSILON" in names
 
         for row in tab:
             det = _to_text(row[det_col])
@@ -281,10 +288,16 @@ def load_rimo_detectors(rimo_path: str | Path) -> dict[str, dict[str, np.ndarray
                 theta_uv = float(row["THETA_UV"])
                 psi_uv = float(row["PSI_UV"])
                 psi_pol = float(row["PSI_POL"]) if has_psi_pol else 0.0
+                eps = float(row["EPSILON"]) if has_eps else 0.0
                 rec["phi_uv"] = phi_uv
                 rec["theta_uv"] = theta_uv
                 rec["psi_uv"] = psi_uv
                 rec["psi_pol"] = psi_pol
+                rec["psi_pol_rad"] = psi_pol * (np.pi / 180.0)
+                rec["psi_uv_rad"] = psi_uv * (np.pi / 180.0)
+                rec["epsilon"] = eps
+                # Polarisation efficiency rho = (1 - eps)/(1 + eps); 1.0 for ideal.
+                rec["rho_pol"] = (1.0 - eps) / (1.0 + eps)
                 rec["quat"] = _rimo_detector_quat(phi_uv, theta_uv, psi_uv, psi_pol)
             out[det] = rec
     if not out:
@@ -428,6 +441,151 @@ def load_beam_alm(
     except Exception:
         alm = hp.read_alm(str(p), hdu=1)
     return _coerce_alm_shape(np.asarray(alm, dtype=np.complex128))
+
+
+# HEALPix RING SHT geometry (theta/nphi/phi0/ringstart per ring) and the healpy m-major
+# alm offsets, cached per nside / (lmax, mmax) since a run reuses one nside for every beam.
+_HPX_SHT_GEOM: dict[int, dict] = {}
+_ALM_MSTART: dict[tuple[int, int], np.ndarray] = {}
+
+
+def _healpix_sht_geom(nside: int) -> dict:
+    g = _HPX_SHT_GEOM.get(nside)
+    if g is None:
+        g = ducc0.healpix.Healpix_Base(nside, "RING").sht_info()
+        _HPX_SHT_GEOM[nside] = g
+    return g
+
+
+def _alm_mstart(lmax: int, mmax: int) -> np.ndarray:
+    key = (lmax, mmax)
+    ms = _ALM_MSTART.get(key)
+    if ms is None:
+        ms = np.array([m * (2 * lmax + 1 - m) // 2 for m in range(mmax + 1)], dtype=np.uint64)
+        _ALM_MSTART[key] = ms
+    return ms
+
+
+def _ducc_synthesis(alm: np.ndarray, nside: int, lmax: int, mmax: int, spin: int, nthreads: int) -> np.ndarray:
+    """``ducc0`` HEALPix synthesis (alm -> map); matches ``hp.alm2map`` but multi-threaded."""
+    g = _healpix_sht_geom(nside)
+    return _sht.synthesis(
+        alm=np.ascontiguousarray(np.atleast_2d(alm), dtype=np.complex128),
+        theta=g["theta"], lmax=int(lmax), mmax=int(mmax), mstart=_alm_mstart(lmax, mmax),
+        nphi=g["nphi"], phi0=g["phi0"], ringstart=g["ringstart"], spin=int(spin),
+        nthreads=int(nthreads),
+    )
+
+
+def _ducc_adjoint(mp: np.ndarray, nside: int, lmax: int, mmax: int, spin: int, nthreads: int) -> np.ndarray:
+    """``ducc0`` adjoint synthesis (map -> alm), the non-iterated transform; multi-threaded."""
+    g = _healpix_sht_geom(nside)
+    return _sht.adjoint_synthesis(
+        map=np.ascontiguousarray(np.atleast_2d(mp), dtype=np.float64),
+        theta=g["theta"], lmax=int(lmax), mmax=int(mmax), mstart=_alm_mstart(lmax, mmax),
+        nphi=g["nphi"], phi0=g["phi0"], ringstart=g["ringstart"], spin=int(spin),
+        nthreads=int(nthreads),
+    )
+
+
+def _beam_eb_iter3(qu: np.ndarray, nside: int, lmax: int, mmax: int, nthreads: int) -> np.ndarray:
+    """Spin-2 ``[Q, U] -> [E, B]`` analysis, reproducing ``hp.map2alm(pol=True, iter=3)``.
+
+    The same Jacobi iteration healpy/healpix_cxx use (base transform + 3 residual
+    corrections, base = adjoint synthesis weighted by the pixel area ``4 pi / npix``),
+    but on ducc0's threaded SHT. Verified to match healpy ``iter=3`` to ~1e-12.
+    """
+    w = 4.0 * np.pi / hp.nside2npix(nside)
+    qu = np.ascontiguousarray(qu, dtype=np.float64)
+    eb = _ducc_adjoint(qu, nside, lmax, mmax, spin=2, nthreads=nthreads) * w
+    for _ in range(3):
+        qu_rec = _ducc_synthesis(eb, nside, lmax, mmax, spin=2, nthreads=nthreads)
+        eb = eb + _ducc_adjoint(qu - qu_rec, nside, lmax, mmax, spin=2, nthreads=nthreads) * w
+    return eb
+
+
+def build_polarized_beam_alm(
+    beam_alm_scalar: np.ndarray,
+    psi_pol_rad: float,
+    lmax: int,
+    mmax: int,
+    nside: int | None = None,
+    psi_uv_rad: float = 0.0,
+    rho_pol: float = 1.0,
+    nthreads: int = 0,
+) -> np.ndarray:
+    """Build an ideal co-polar polarised beam ``[T, E, B]`` from a scalar Planck blm.
+
+    Planck ``blm_*`` files store only the scalar (spin-0) intensity beam, in the Dxx
+    (beam-geometric) frame. ducc0 total-convolution needs a 3-component ``[T, E, B]``
+    beam whose E/B are the spin-2 polarised response. For an ideal polarisation-
+    sensitive detector that response is the same intensity pattern modulated by the
+    spin-2 phase: ``(I, Q, U) = B (1, cos chi, sin chi)`` with ``chi = -2 phi``, whose
+    ``map2alm(pol=True)`` gives ``[T, E, B]``.
+
+    Frames: ``psi_uv`` is the Dxx->Pxx angle, ``psi_pol`` the Pxx->polarisation-axis
+    angle. The beam ellipse lives in Dxx and is carried into the Pxx convolution frame
+    by ``psi_uv``; the polarisation axis is left at the Pxx x-axis, matching the
+    convolution and map-making, which both read polarisation at the Pxx pointing angle
+    ``psi_buf``. Convolve the returned beam at ``psi_pxx = psi_buf``. 
+
+    Args:
+        beam_alm_scalar: Scalar intensity beam ``(1, nalm)`` or ``(nalm,)``, healpy
+            m-major at ``(lmax, mmax)``, in the Dxx frame.
+        psi_pol_rad: Detector polarisation angle ``psi_pol`` (radians).
+        lmax: Maximum multipole of the beam alm.
+        mmax: Maximum azimuthal order retained in the output beam.
+        nside: HEALPix resolution for the intermediate map; default smallest power of
+            two with ``2 * nside >= lmax``.
+        psi_uv_rad: Detector ``psi_uv`` (radians) = the Dxx->Pxx rotation.
+        rho_pol: Polarisation efficiency; scales E/B to match the rho-weighted solve.
+        nthreads: Threads for the ducc0 SHTs (``0`` = all cores). The synthesis/analysis
+            reproduce ``hp.alm2map`` / ``hp.map2alm(pol=True, iter=3)`` exactly but run
+            multi-threaded (healpy's classic backend is single-threaded).
+
+    Returns:
+        Complex128 ``(3, nalm)`` ``[T, E, B]`` beam alm at ``(lmax, mmax)``, in the
+        Pxx frame. Convolve at ``psi_pxx = psi_buf``.
+    """
+    bb = beam_alm_scalar[0] if np.ndim(beam_alm_scalar) == 2 else np.asarray(beam_alm_scalar)
+    bb = np.ascontiguousarray(bb, dtype=np.complex128)
+
+    if nside is None:
+        nside = 1
+        while 2 * nside < lmax:
+            nside *= 2
+
+    ell, emm = hp.Alm.getlm(lmax, np.arange(bb.size))
+
+    # Carry the beam ellipse from Dxx into the Pxx convolution frame (psi_uv = Dxx->Pxx).
+    bb_pol = bb * np.exp(1j * emm * float(psi_uv_rad))
+
+    # Ideal co-polar Stokes pattern; the spin-2 E/B follow from map2alm(pol=True). The
+    # pol axis is left at the Pxx x-axis (chi = -2 phi) so it matches the frame the
+    # convolution and map-making read it in (psi_buf, psi_conv_offset = 0). psi_pol is
+    # not applied to the beam alone -- doing so would mismatch the solve and leak E->B.
+    beam_map = _ducc_synthesis(bb_pol, nside, lmax, mmax, spin=0, nthreads=nthreads)[0]
+    phi = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)))[1]
+    chi = -2.0 * phi
+    qu = np.array([beam_map * np.cos(chi), beam_map * np.sin(chi)])
+    # Spin-2 E/B analysis. iter=3 is load-bearing: the e^{-2i phi} construction pushes
+    # power just above lmax=2*nside, and the iteration corrects that aliasing. Dropping
+    # to iter=0 with quadrature weights was measured to bias EE/BB by ~3.5% end-to-end;
+    # a higher nside removes the aliasing but is slower, so the iter=3 scheme stays. It
+    # runs on ducc0's threaded SHT (reproduces hp.map2alm(pol=True, iter=3) to ~1e-12).
+    e_alm, b_alm = _beam_eb_iter3(qu, nside, lmax, mmax, nthreads=nthreads)
+
+    # Polarisation efficiency: scale E/B by rho to match the rho-weighted map-making
+    # (map.use_cross_pol); otherwise EE/BB come out inflated by 1/rho^2.
+    e_alm = e_alm * float(rho_pol)
+    b_alm = b_alm * float(rho_pol)
+
+    # T component: same Dxx->Pxx rotation (psi_uv) as the E/B ellipse above -- this is
+    # what co-orients a horn's two PSB arms (their Dxx frames are ~90 deg apart) in the
+    # common Pxx frame. Taken from the input alm directly, so it is exact (no
+    # pixelisation).
+    bb_T = bb * np.exp(1j * emm * float(psi_uv_rad))
+    return np.ascontiguousarray(np.array([bb_T, e_alm, b_alm], dtype=np.complex128))
 
 
 def normalize_beam_alm(beam_alm: np.ndarray, mode: str = "unit_integral") -> np.ndarray:
