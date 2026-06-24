@@ -6,6 +6,7 @@ import numpy as np
 from ducc0.healpix import Healpix_Base
 from numba import njit as _njit
 from numba import prange as _prange
+from numba import get_thread_id as _get_thread_id
 
 # Standard HEALPix sentinel for unobserved pixels (same value used by healpy).
 _UNSEEN: float = -1.6375e30
@@ -105,6 +106,46 @@ def accumulate_tqu_matrix(
     psi64 = np.ascontiguousarray(psi, dtype=np.float64)
     tod64 = np.ascontiguousarray(tod, dtype=np.float64)
     _accumulate_tqu_jit(matrix, pix64, psi64, tod64, float(det_weight), float(rho))
+
+
+@_njit(fastmath=True, cache=True, parallel=True)
+def _accumulate_tqu_local_jit(local, pix, psi, tod, w, rho):
+    """Scatter the 9 normal-equation entries into per-thread accumulators.
+
+    ``local`` has shape ``(nthreads, npix, 3, 3)``; each sample writes only into its
+    own thread's slice, so the scatter runs fully in ``prange`` with no race (unlike
+    :func:`_accumulate_tqu_jit`, whose scatter must be serial). Sum over axis 0 after
+    all samples to get the ``(npix, 3, 3)`` matrix.
+    """
+    for i in _prange(pix.shape[0]):
+        t = _get_thread_id()
+        two = 2.0 * psi[i]
+        a = rho * math.cos(two)
+        b = rho * math.sin(two)
+        y = w * tod[i]
+        p = pix[i]
+        local[t, p, 0, 0] += w
+        local[t, p, 0, 1] += w * a
+        local[t, p, 0, 2] += w * b
+        local[t, p, 1, 1] += w * a * a
+        local[t, p, 1, 2] += w * a * b
+        local[t, p, 2, 2] += w * b * b
+        local[t, p, 1, 0] += y
+        local[t, p, 2, 0] += y * a
+        local[t, p, 2, 1] += y * b
+
+
+def accumulate_tqu_local(local, pix, psi, tod, det_weight, rho=1.0):
+    """Parallel variant of :func:`accumulate_tqu_matrix` writing into per-thread
+    accumulators ``local`` of shape ``(nthreads, npix, 3, 3)``. Reduce with
+    ``local.sum(axis=0)`` once after the OD loop. Trades ``nthreads x`` the matrix
+    memory for a parallel scatter."""
+    if pix.size == 0:
+        return
+    pix64 = np.ascontiguousarray(pix, dtype=np.int64)
+    psi64 = np.ascontiguousarray(psi, dtype=np.float64)
+    tod64 = np.ascontiguousarray(tod, dtype=np.float64)
+    _accumulate_tqu_local_jit(local, pix64, psi64, tod64, float(det_weight), float(rho))
 
 
 @_njit(fastmath=True, cache=True, parallel=True)
