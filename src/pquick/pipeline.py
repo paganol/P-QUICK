@@ -369,7 +369,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
     for od_idx, npz_path in enumerate(local_pointing, start=1):
         _vprint(verbose, rank, f"[OD {od_idx}/{len(local_pointing)}] {npz_path.name}")
-        t_resamp_od = t_conv_od = t_macc_od = t_flag_od = 0.0
+        t_resamp_od = t_conv_od = t_macc_od = t_flag_od = t_prep_od = t_pix_od = 0.0
         _od_wall0 = _time.perf_counter()
 
         _t0 = _time.perf_counter()
@@ -475,6 +475,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                     f"    [DET {det_idx}/{len(det_info)}] {det_name}",
                 )
 
+                _t0 = _time.perf_counter()
                 if det_name == _first_det_name:
                     ring_bad = _ring_bad_first
                 elif bad_ring_intervals is not None:
@@ -500,6 +501,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                     continue
 
                 q_bore_good = q_bore_all if ngood == chunk_len else q_bore_all[good]
+                t_prep_od += _time.perf_counter() - _t0
 
                 # Fill pre-allocated buffers directly — no temporary arrays. det_quat is
                 # built from psi_uv only, so psi_buf is the Pxx (polarisation-frame)
@@ -519,11 +521,13 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 if hpx_center is not None:
                     # Snap (theta, phi) to HEALPix pixel centers to suppress
                     # subpixel pointing variation before convolution.
+                    _t0 = _time.perf_counter()
                     pix_center = hpx_center.ang2pix(
                         ptg_buf[:ngood, :2],
                         nthreads=nthreads,
                     )
                     ptg_buf[:ngood, :2] = hpx_center.pix2ang(pix_center, nthreads=nthreads)
+                    t_pix_od += _time.perf_counter() - _t0
 
                 _t0 = _time.perf_counter()
                 conv_interp = beam_interp_cache.get(det_name) if cache_interp else None
@@ -564,12 +568,13 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         t_macc_total += t_macc_od
         od_wall = _time.perf_counter() - _od_wall0
         t_od_wall_total += od_wall
-        _od_other = od_wall - (t_resamp_od + t_conv_od + t_macc_od + t_flag_od)
+        _od_other = od_wall - (t_resamp_od + t_conv_od + t_macc_od + t_flag_od + t_prep_od + t_pix_od)
         _vprint(
             verbose,
             rank,
             f"  [OD timing] resamp={t_resamp_od:.2f}s  conv={t_conv_od:.2f}s  macc={t_macc_od:.2f}s"
-            f"  flag={t_flag_od:.2f}s  other={_od_other:.2f}s  od_wall={od_wall:.2f}s",
+            f"  flag={t_flag_od:.2f}s  prep={t_prep_od:.2f}s  pix={t_pix_od:.2f}s"
+            f"  other={_od_other:.2f}s  od_wall={od_wall:.2f}s",
         )
 
     _vprint(verbose, rank, f"OD loop done. Reducing matrices across {size} rank(s) …")
