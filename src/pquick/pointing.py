@@ -63,31 +63,6 @@ class PointingInterpolator:
     flag_native: np.ndarray
     frame_rotation: np.ndarray
 
-    def get_detector_quaternions(self, detector_quat: np.ndarray, start: int, count: int) -> np.ndarray:
-        """Compose boresight with detector offset quaternion for a chunk of native samples.
-
-        Args:
-            detector_quat: Fixed detector offset quaternion ``(x, y, z, w)``, shape ``(4,)``.
-            start: Index of the first native sample in the chunk.
-            count: Number of native samples to evaluate.
-
-        Returns:
-            Float64 array of shape ``(count, 4)`` containing the rotated unit quaternions.
-        """
-        t0_s = float(start) / float(self.native_rate_hz)
-        detq = normalize_quaternion(np.asarray(detector_quat, dtype=np.float64))
-        q = np.asarray(
-            self.provider.get_rotated_quaternions(
-                t0_s,
-                float(self.native_rate_hz),
-                detq,
-                int(count),
-                False,
-            ),
-            dtype=np.float64,
-        )
-        return frame_rotate_normalize(self.frame_rotation, q)
-
     def get_boresight_quaternions(self, start: int, count: int) -> np.ndarray:
         """Return frame-rotated boresight quaternions for a chunk of native samples.
 
@@ -252,49 +227,6 @@ def _estimate_coarse_rate_hz(
     if step <= 0:
         raise ValueError("Invalid original_indices step for coarse-rate estimate")
     return float(native_rate_hz / step)
-
-
-def reconstruct_native_pointing(
-    pointing: PointingData,
-    coordinate_system: str = "galactic",
-) -> NativePointing:
-    """Upsample boresight quaternions to the native rate via ``ducc0.PointingProvider``.
-
-    Uses native-rate quality flags from :class:`PointingData` directly.
-
-    Args:
-        pointing: Undersampled pointing data from :func:`~pquick.io.load_pointing_npz`.
-        coordinate_system: Output sky frame for the returned quaternions. Supported
-            values are ``"ecliptic"`` and ``"galactic"``.
-
-    Returns:
-        A :class:`NativePointing` instance at the full detector sampling rate.
-    """
-    try:
-        from ducc0.pointingprovider import PointingProvider
-    except Exception as exc:  # pragma: no cover
-        raise ImportError("ducc0 is required for pointing interpolation") from exc
-
-    time_native = reconstruct_native_time(pointing.t0_ns, pointing.sampling_rate_hz, pointing.original_indices)
-    coarse_rate_hz = _estimate_coarse_rate_hz(pointing.sampling_rate_hz, pointing.original_indices)
-
-    pp = PointingProvider(0.0, coarse_rate_hz, pointing.quat_us)
-    quat_native = np.asarray(
-        pp.get_rotated_quaternions(
-            0.0,
-            float(pointing.sampling_rate_hz),
-            np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64),
-            int(time_native.size),
-            False,
-        ),
-        dtype=np.float64,
-    )
-    quat_native = normalize_quaternion(quat_mul(_frame_rotation_quaternion(coordinate_system), quat_native))
-
-    # Keep bad samples marked; flags are already at native rate.
-    flag_native = np.asarray(pointing.flag, dtype=np.int8)
-
-    return NativePointing(time_native=time_native, quat_native=quat_native, flag_native=flag_native)
 
 
 def build_pointing_interpolator(
