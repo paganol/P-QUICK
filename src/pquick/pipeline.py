@@ -27,7 +27,7 @@ from .io import (
 )
 from .mapmaking import accumulate_tqu_matrix, solve_tqu_from_matrix
 from .pointing import build_pointing_interpolator
-from .quaternion import bore_det_to_angles, bore_det_to_ptg, normalize_quaternion, quat_mul
+from .quaternion import bore_det_to_angles, bore_det_to_ptg, bore_det_to_ptg_masked, normalize_quaternion, quat_mul
 from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution, resolve_nthreads
 
 
@@ -449,18 +449,20 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 )
             else:
                 _ring_bad_first = np.zeros(chunk_len, dtype=bool)
-            if use_flag_od:
-                _first_flag = detector_flags[_first_det_name][chunk_start:chunk_end]
-                _common_bad = interp.flag_native[chunk_start:chunk_end] != 0
-                _good_first = ~(_common_bad | (_first_flag != 0) | _ring_bad_first)
-            else:
-                _good_first = ~_ring_bad_first
-            _vprint(
-                verbose,
-                rank,
-                f"  [chunk {chunk_idx}/{n_chunks}] samples {chunk_start}:{chunk_end}"
-                f" | good={int(np.count_nonzero(_good_first))}/{chunk_len} | n_native={interp.n_native}",
-            )
+            # common_bad is detector-independent; build once here and reuse in the det loop.
+            _common_bad = interp.flag_native[chunk_start:chunk_end] != 0 if use_flag_od else None
+            if verbose:  # the good-count is log-only — don't pay for it in quiet runs
+                _gf = (
+                    ~(_common_bad | (detector_flags[_first_det_name][chunk_start:chunk_end] != 0) | _ring_bad_first)
+                    if use_flag_od
+                    else ~_ring_bad_first
+                )
+                _vprint(
+                    verbose,
+                    rank,
+                    f"  [chunk {chunk_idx}/{n_chunks}] samples {chunk_start}:{chunk_end}"
+                    f" | good={int(np.count_nonzero(_gf))}/{chunk_len} | n_native={interp.n_native}",
+                )
 
             for det_idx, dinfo in enumerate(det_info, start=1):
                 det_quat = np.asarray(dinfo["quat"], dtype=np.float64)
@@ -491,8 +493,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                     ring_bad = _ring_bad_first  # all-zeros, safe to share (never mutated)
                 if use_flag_od:
                     det_flag_chunk = detector_flags[det_name][chunk_start:chunk_end]
-                    common_bad = interp.flag_native[chunk_start:chunk_end] != 0
-                    good = ~(common_bad | (det_flag_chunk != 0) | ring_bad)
+                    good = ~(_common_bad | (det_flag_chunk != 0) | ring_bad)
                 else:
                     good = ~ring_bad
 
@@ -500,7 +501,8 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 if ngood == 0:
                     continue
 
-                q_bore_good = q_bore_all if ngood == chunk_len else q_bore_all[good]
+                # idx of good samples (cheap int array) instead of the 4-wide q_bore[good] copy.
+                good_idx = None if ngood == chunk_len else np.flatnonzero(good)
                 t_prep_od += _time.perf_counter() - _t0
 
                 # Fill pre-allocated buffers directly — no temporary arrays. det_quat is
@@ -509,12 +511,10 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 # to Pxx in build_polarized_beam_alm, so convolve at psi_pxx = psi_buf
                 # (offset 0) and the beam, convolution and map-making share that frame.
                 _t0 = _time.perf_counter()
-                bore_det_to_ptg(
-                    q_bore_good,
-                    det_quat,
-                    ptg_buf[:ngood],
-                    psi_buf[:ngood],
-                )
+                if good_idx is None:
+                    bore_det_to_ptg(q_bore_all, det_quat, ptg_buf[:ngood], psi_buf[:ngood])
+                else:
+                    bore_det_to_ptg_masked(q_bore_all, det_quat, good_idx, ptg_buf[:ngood], psi_buf[:ngood])
                 t_resamp_od += _time.perf_counter() - _t0
 
                 pix_center = None
