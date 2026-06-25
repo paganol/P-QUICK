@@ -33,7 +33,7 @@ Important fields:
 9. `detector_selection`: choose either a channel/detset alias or an explicit detector list.
 10. `convolution.lmax` / `convolution.mmax`: harmonic limits.
 11. `convolution.cache_interpolator`: `true` (default) builds each detector's `ducc0` convolution cube once and reuses it across every OD/chunk on a rank (the cube depends only on the sky, beam, `lmax`, `mmax` and `epsilon` — not on the pointing), removing the dominant per-OD rebuild. It keeps one cube resident per detector (~0.4 GB at lmax=1024/mmax=6, ~1–2 GB at lmax=2048); set `false` to rebuild per OD for lower memory.
-12. `nthreads`: thread count for `ducc0` and the numba-parallel resampling / map-making kernels (`0` = all available cores). Trade off against the number of MPI ranks per node.
+12. `nthreads`: thread count for `ducc0` and the numba-parallel resampling / map-making kernels (`0` = all available cores). Trade off against the number of MPI ranks per node. Note: map-making keeps a per-thread `(nthreads, npix, 3, 3)` accumulator (parallel scatter, summed after the OD loop), so its memory scales with `nthreads` — about 3.6 GB per thread at nside 2048; lower `nthreads` (or `map.nside`) if a rank is memory-bound.
 13. `map.nside`: output HEALPix map resolution.
 14. `map.use_cross_pol`: `true` (default) weights the map-making polarisation by the per-detector `rho = (1-eps)/(1+eps)` from the RIMO (= qp_planck `rhohit: IMO`); `false` assumes ideal detectors (`rho = 1`, qp_planck `rhohit: Ideal`). Temperature is unaffected.
 15. `resampling.coordinate_system`: pointing frame (`ecliptic` or `galactic`).
