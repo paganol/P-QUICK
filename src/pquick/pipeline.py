@@ -25,7 +25,7 @@ from .io import (
     select_detectors,
     truncate_alm,
 )
-from .mapmaking import accumulate_tqu_local, add_hits, solve_tqu_from_matrix
+from .mapmaking import accumulate_tqu_matrix, add_hits, solve_tqu_from_matrix
 from .pointing import build_pointing_interpolator
 from .quaternion import bore_det_to_angles, bore_det_to_ptg, bore_det_to_ptg_masked, normalize_quaternion, quat_mul
 from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution, resolve_nthreads
@@ -345,9 +345,11 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
     _vprint(verbose, rank, f"Starting pipeline: {len(local_pointing)} ODs on rank {rank}/{size}")
 
-    # Per-thread accumulators so the scatter parallelises; summed after the OD loop.
-    # Costs nthreads x (npix,3,3) = nthreads x ~3.6GB at nside 2048.
-    local_acc = np.zeros((numba.get_num_threads(), npix, 3, 3), dtype=np.float64)
+    # Single (npix,3,3) accumulator. accumulate_tqu_matrix parallelises the per-sample
+    # trig (the real cost) and does only the cheap 9-add scatter serially -- benchmarked
+    # faster AND nthreads-x lighter than a per-thread (nthreads,npix,3,3) copy, whose
+    # cache footprint thrashes bandwidth at nside 2048 (~3.6GB vs ~44GB at 12 threads).
+    matrix_acc = np.zeros((npix, 3, 3), dtype=np.float64)
     hits_acc = np.zeros(npix, dtype=np.int64)
     n_chunks_cfg = int(max(1, config.convolution.chunks))
 
@@ -556,7 +558,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                         ptg_buf[:ngood, :2],
                         nthreads=nthreads,
                     )
-                accumulate_tqu_local(local_acc, pix, psi_buf[:ngood], np.asarray(tod, dtype=np.float64), det_weight, rho=rho_pol)
+                accumulate_tqu_matrix(matrix_acc, pix, psi_buf[:ngood], np.asarray(tod, dtype=np.float64), det_weight, rho=rho_pol)
                 # Scatter hits straight into the persistent buffer (O(ngood)); np.bincount
                 # would alloc+zero a full npix array every call (~50 ms at nside 2048).
                 add_hits(hits_acc, pix)
@@ -581,8 +583,6 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
     _vprint(verbose, rank, f"OD loop done. Reducing matrices across {size} rank(s) …")
     _t0 = _time.perf_counter()
-    matrix_acc = local_acc.sum(axis=0)  # reduce per-thread accumulators -> (npix,3,3)
-    del local_acc
     matrix_all = _sum_reduce(comm, matrix_acc, rank)
     del matrix_acc
     hits_all = _sum_reduce(comm, hits_acc, rank)
