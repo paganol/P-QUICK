@@ -423,16 +423,26 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         t_flag_od += _time.perf_counter() - _t0
 
         # Whole-OD early-out: skip the chunk loop (and its per-chunk boresight
-        # interpolation) when no detector has a single good sample -- i.e. for every
-        # detector the common flag OR the horn flag is bad everywhere. Conservative wrt
-        # bad-ring intervals (they only remove samples), so a "has good" OD is processed
-        # normally and ring-masked per chunk. Falls through to the OD timing accounting.
+        # interpolation) when no detector has a single good sample. Computes the real
+        # good mask per detector exactly as the loop does (common flag | horn flag |
+        # bad-ring), over the full OD, short-circuiting on the first detector with any
+        # good sample. Falls through to the OD timing accounting below.
         od_all_flagged = False
-        if use_flag_od:
-            common_good = interp.flag_native == 0
-            od_all_flagged = not any(
-                (common_good & (hflag == 0)).any() for hflag in detector_flags.values()
-            )
+        if use_flag_od or bad_ring_intervals is not None:
+            common_bad = (interp.flag_native != 0) if use_flag_od else None
+            od_has_good = False
+            for dinfo in det_info:
+                dname = str(dinfo["name"])
+                bad = _chunk_bad_ring_mask(
+                    bad_ring_intervals, dname, interp.coarse_t0_ns,
+                    interp.native_rate_hz, 0, interp.n_native,
+                )
+                if use_flag_od:
+                    bad = bad | common_bad | (detector_flags[dname] != 0)
+                if not bad.all():
+                    od_has_good = True
+                    break
+            od_all_flagged = not od_has_good
             if od_all_flagged:
                 _vprint(verbose, rank, f"  {npz_path.name}: no good samples — skipping OD")
 
