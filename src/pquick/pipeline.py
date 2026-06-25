@@ -231,7 +231,18 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
     det_info: list[dict[str, object]] = []
     for det in detectors:
-        beam_file = detector_to_beam_file(config.inputs.beams_dir, det)
+        # A detector can be in the RIMO but have no beam file (e.g. the 143-8 SWB,
+        # excluded from the standard HFI set) — skip it instead of crashing a whole
+        # channel selection. qp_planck likewise drops such detectors.
+        try:
+            beam_file = detector_to_beam_file(config.inputs.beams_dir, det)
+        except FileNotFoundError:
+            warnings.warn(
+                f"No beam file for detector {det!r} in {config.inputs.beams_dir} — skipping it",
+                UserWarning,
+                stacklevel=2,
+            )
+            continue
         beam_alm = load_beam_alm(
             beam_file,
             lmax=config.convolution.lmax,
@@ -280,6 +291,12 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                     else 1.0
                 ),
             }
+        )
+
+    if not det_info:
+        raise FileNotFoundError(
+            f"No detectors have beam files in {config.inputs.beams_dir} for the current "
+            f"selection ({len(detectors)} detector(s) requested) — check beams_dir."
         )
 
     mission = config.inputs.mission_length or "full"
