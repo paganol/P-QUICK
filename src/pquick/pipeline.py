@@ -359,6 +359,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     t_setup = _time.perf_counter() - t_wall0
 
     t_resamp_total = t_conv_total = t_macc_total = 0.0
+    t_flag_total = t_prep_total = t_pix_total = 0.0
     t_od_wall_total = 0.0
 
     # The ducc0 convolution cube depends only on (sky, beam, lmax, mmax, epsilon) — not on
@@ -570,6 +571,9 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         t_resamp_total += t_resamp_od
         t_conv_total += t_conv_od
         t_macc_total += t_macc_od
+        t_flag_total += t_flag_od
+        t_prep_total += t_prep_od
+        t_pix_total += t_pix_od
         od_wall = _time.perf_counter() - _od_wall0
         t_od_wall_total += od_wall
         _od_other = od_wall - (t_resamp_od + t_conv_od + t_macc_od + t_flag_od + t_prep_od + t_pix_od)
@@ -591,7 +595,10 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     _vprint(verbose, rank, f"Reduce done in {t_reduce:.2f}s. Solving T/Q/U …")
 
     if rank != 0:
-        _od_other_total = t_od_wall_total - (t_resamp_total + t_conv_total + t_macc_total)
+        _od_other_total = t_od_wall_total - (
+            t_resamp_total + t_conv_total + t_macc_total
+            + t_flag_total + t_prep_total + t_pix_total
+        )
         _wall = _time.perf_counter() - t_wall0
         _vprint(
             verbose,
@@ -601,6 +608,9 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             f"  resamp={t_resamp_total:.2f}s"
             f"  conv={t_conv_total:.2f}s"
             f"  macc={t_macc_total:.2f}s"
+            f"  flag={t_flag_total:.2f}s"
+            f"  prep={t_prep_total:.2f}s"
+            f"  pix={t_pix_total:.2f}s"
             f"  od_other={_od_other_total:.2f}s"
             f"  reduce={t_reduce:.2f}s"
             f"  wall={_wall:.2f}s",
@@ -637,13 +647,17 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     t_write = _time.perf_counter() - _t0
 
     # Reconcile against the stopwatch: wall is the true elapsed time inside run_pipeline;
-    # the section timers (resamp/conv/macc/reduce/solve/write) plus setup and od_other
-    # (per-OD flag I/O, sample masking, boresight copies) should sum to it, leaving only
+    # the section timers (resamp/conv/macc/flag/prep/pix/reduce/solve/write) plus setup and
+    # od_other (residual per-OD work not in a named bucket) should sum to it, leaving only
     # a small "unaccounted" remainder (import-triggered lazy work, GC, etc.).
-    od_other_total = t_od_wall_total - (t_resamp_total + t_conv_total + t_macc_total)
+    od_other_total = t_od_wall_total - (
+        t_resamp_total + t_conv_total + t_macc_total
+        + t_flag_total + t_prep_total + t_pix_total
+    )
     wall = _time.perf_counter() - t_wall0
     accounted = (
         t_setup + t_resamp_total + t_conv_total + t_macc_total
+        + t_flag_total + t_prep_total + t_pix_total
         + od_other_total + t_reduce + t_solve + t_write
     )
     _vprint(
@@ -654,6 +668,9 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         f"  resamp={t_resamp_total:.2f}s"
         f"  conv={t_conv_total:.2f}s"
         f"  macc={t_macc_total:.2f}s"
+        f"  flag={t_flag_total:.2f}s"
+        f"  prep={t_prep_total:.2f}s"
+        f"  pix={t_pix_total:.2f}s"
         f"  od_other={od_other_total:.2f}s"
         f"  reduce={t_reduce:.2f}s"
         f"  solve={t_solve:.2f}s"
