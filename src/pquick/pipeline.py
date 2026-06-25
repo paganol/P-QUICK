@@ -28,7 +28,7 @@ from .io import (
 from .mapmaking import accumulate_tqu_local, add_hits, solve_tqu_from_matrix
 from .pointing import build_pointing_interpolator
 from .quaternion import bore_det_to_angles, bore_det_to_ptg, bore_det_to_ptg_masked, normalize_quaternion, quat_mul
-from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution, resolve_nthreads
+from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, is_psb, parse_mission_length, print_mpi_distribution, resolve_nthreads
 
 
 def _load_bad_ring_intervals(path: str | Path) -> dict[str, np.ndarray]:
@@ -250,6 +250,15 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         )
         dmeta = det_meta.get(det, {})
         psi_pol_rad = float(dmeta.get("psi_pol_rad", 0.0))
+        # Polarisation efficiency used by both the beam E/B scaling and the map-making
+        # weight. use_cross_pol=True -> RIMO rho=(1-eps)/(1+eps) (qp_planck rhohit=IMO);
+        # False -> ideal, but ideal still means rho=0 for an unpolarised SWB, not 1
+        # (qp_planck rhohit=Ideal uses the PSB flag: 1 for PSB, 0 for SWB).
+        rho_eff = (
+            float(dmeta.get("rho_pol", 1.0))
+            if config.map.use_cross_pol
+            else (1.0 if is_psb(det) else 0.0)
+        )
         # Scalar Planck blm (Dxx) -> spin-2 polarised [T, E, B] beam in the Pxx frame.
         beam_alm = build_polarized_beam_alm(
             beam_alm,
@@ -258,10 +267,8 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             mmax=config.convolution.mmax,
             psi_uv_rad=float(dmeta.get("psi_uv_rad", 0.0)),
             # Match the map-making polarisation efficiency so EE/BB are not
-            # inflated by 1/rho^2 (1.0 when use_cross_pol is off).
-            rho_pol=(
-                float(dmeta.get("rho_pol", 1.0)) if config.map.use_cross_pol else 1.0
-            ),
+            # inflated by 1/rho^2.
+            rho_pol=rho_eff,
             nthreads=nthreads,
         )
         _vprint(
@@ -285,11 +292,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 "weight": detector_map_weight(det),
                 "psi_pol_rad": psi_pol_rad,
                 "psi_uv_rad": float(dmeta.get("psi_uv_rad", 0.0)),
-                "rho_pol": (
-                    float(dmeta.get("rho_pol", 1.0))
-                    if config.map.use_cross_pol
-                    else 1.0
-                ),
+                "rho_pol": rho_eff,
             }
         )
 

@@ -128,6 +128,15 @@ def detector_map_weight(detector: str, default: float = 1.0) -> float:
     return float(DETECTOR_WEIGHTS.get(_weight_key(detector), default))
 
 
+def is_psb(detector: str) -> bool:
+    """True for a polarization-sensitive detector, False for an unpolarized SWB.
+
+    Matches qp_planck: the name ends in ``a``/``b`` (HFI PSB arm) or ``M``/``S``
+    (LFI radiometer arm); spider-web bolometers (e.g. ``143-5``) do not.
+    """
+    return detector.strip()[-1:] in "abMS"
+
+
 def parse_mission_length(value: str) -> tuple[int, int]:
     """Parse a mission-length selector into an inclusive OD range.
 

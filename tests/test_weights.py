@@ -1,4 +1,12 @@
-from pquick.utilities import detector_map_weight
+from pquick.utilities import detector_map_weight, is_psb
+
+
+def test_is_psb_matches_qp_planck_flag():
+    # qp_planck: psb = det[-1] in "abMS"; SWBs (143-5..8, 545/857) are not.
+    for det in ("143-1a", "143-1b", "100-2a", "LFI27M", "LFI27S"):
+        assert is_psb(det) is True
+    for det in ("143-5", "143-8", "545-1", "857-2"):
+        assert is_psb(det) is False
 
 
 def test_qp_planck_weight_lookup_hfi_psb_arm():
