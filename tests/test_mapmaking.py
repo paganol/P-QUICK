@@ -38,3 +38,18 @@ def test_accumulate_tqu_local_matches_serial():
     accumulate_tqu_local(local, pix, psi, tod, 1.3, rho=0.9)
 
     assert np.allclose(local.sum(axis=0), serial)
+
+
+def test_add_hits_matches_bincount():
+    # persistent serial scatter must equal np.bincount, including accumulation across calls.
+    from pquick.mapmaking import add_hits
+
+    npix = 50
+    rng = np.random.default_rng(1)
+    hits = np.zeros(npix, np.int64)
+    ref = np.zeros(npix, np.int64)
+    for _ in range(3):
+        pix = rng.integers(0, npix, 200).astype(np.int64)
+        add_hits(hits, pix)
+        ref += np.bincount(pix, minlength=npix)
+    assert np.array_equal(hits, ref)

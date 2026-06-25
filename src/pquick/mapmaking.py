@@ -148,6 +148,22 @@ def accumulate_tqu_local(local, pix, psi, tod, det_weight, rho=1.0):
     _accumulate_tqu_local_jit(local, pix64, psi64, tod64, float(det_weight), float(rho))
 
 
+@_njit(cache=True)
+def _add_hits_jit(hits: np.ndarray, pix: np.ndarray) -> None:
+    # ponytail: serial scatter into the persistent hits buffer. O(ngood), no per-call
+    # npix alloc/zero -- np.bincount(minlength=npix) costs ~npix per call (50 ms at
+    # nside 2048) regardless of ngood. Serial (not prange) to avoid a same-pixel race.
+    for i in range(pix.shape[0]):
+        hits[pix[i]] += 1
+
+
+def add_hits(hits: np.ndarray, pix: np.ndarray) -> None:
+    """Add per-sample hit counts into the persistent ``hits`` accumulator in place."""
+    if pix.size == 0:
+        return
+    _add_hits_jit(hits, np.ascontiguousarray(pix, dtype=np.int64))
+
+
 @_njit(fastmath=True, cache=True, parallel=True)
 def _solve_tqu_jit(
     matrix: np.ndarray,

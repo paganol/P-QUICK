@@ -25,7 +25,7 @@ from .io import (
     select_detectors,
     truncate_alm,
 )
-from .mapmaking import accumulate_tqu_local, solve_tqu_from_matrix
+from .mapmaking import accumulate_tqu_local, add_hits, solve_tqu_from_matrix
 from .pointing import build_pointing_interpolator
 from .quaternion import bore_det_to_angles, bore_det_to_ptg, bore_det_to_ptg_masked, normalize_quaternion, quat_mul
 from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution, resolve_nthreads
@@ -557,9 +557,9 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                         nthreads=nthreads,
                     )
                 accumulate_tqu_local(local_acc, pix, psi_buf[:ngood], np.asarray(tod, dtype=np.float64), det_weight, rho=rho_pol)
-                # bincount is a single C-level pass, much faster than np.add.at's
-                # unbuffered scatter for the per-pixel hit count.
-                hits_acc += np.bincount(pix, minlength=hits_acc.shape[0]).astype(hits_acc.dtype, copy=False)
+                # Scatter hits straight into the persistent buffer (O(ngood)); np.bincount
+                # would alloc+zero a full npix array every call (~50 ms at nside 2048).
+                add_hits(hits_acc, pix)
                 del pix, tod
                 t_macc_od += _time.perf_counter() - _t0
 
