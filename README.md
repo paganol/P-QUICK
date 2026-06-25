@@ -97,6 +97,8 @@ Map accumulation uses the detector weights defined in qp_planck utilities.
 2. LFI M/S arms map to horn weights (example: LFI27M and LFI27S use LFI27).
 3. The weight table is the canonical good-detector list (as in qp_planck `list_planck(good=True)`): detectors absent from it are non-working bolometers — Planck HFI `143-8` and `545-3`, the RTS-noise detectors — and are skipped with a warning, not run at a fallback weight.
 
+When 2 or fewer polarisation-sensitive detectors are selected, Q/U are unconstrained, so the map-making automatically solves **temperature-only** (I map; Q/U left unseen) instead of rejecting every pixel in the 3×3 solve. This matches qp_planck's `polar = sum(psb) > 2` gate.
+
 ## Repository layout
 
 1. `src/pquick/config.py`: typed YAML config loading.

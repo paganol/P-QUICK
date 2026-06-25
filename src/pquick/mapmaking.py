@@ -237,16 +237,29 @@ def _solve_tqu_jit(
         u_map[p] = (c02 * r0 + c12 * r1 + c22 * r2) * inv
 
 
+@_njit(fastmath=True, cache=True, parallel=True)
+def _solve_t_only_jit(matrix: np.ndarray, t_map: np.ndarray) -> None:
+    """Temperature-only solve: ``T = (Aᵀd)_I / (AᵀA)_II`` for every hit pixel.
+
+    The I–I normal element (``matrix[p,0,0]``, the summed weight) is always
+    well-defined, so unlike the 3x3 solve no pixel is rejected for ill-conditioned
+    Q/U. Used when too few PSBs are present to constrain polarisation.
+    """
+    for p in _prange(matrix.shape[0]):
+        w = matrix[p, 0, 0]
+        if w > 0.0:
+            t_map[p] = matrix[p, 1, 0] / w
+
+
 def solve_tqu_from_matrix(
     matrix: np.ndarray,
     cond_threshold: float = 1e10,
     batch_size: int = 1_000_000,
+    temperature_only: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Solve the per-pixel 3x3 polarised map-making equation to recover T, Q, U maps.
+    """Solve the per-pixel map-making equation to recover T, Q, U maps.
 
     Pixels with no hits or a poorly conditioned normal matrix are set to ``_UNSEEN``.
-    Pixels are processed in batches of ``batch_size`` to keep the memory footprint small
-    (avoids allocating a full-sky copy of the matrix during the solve step).
 
     Args:
         matrix: Accumulated normal-equation array of shape ``(npix, 3, 3)`` from
@@ -254,6 +267,9 @@ def solve_tqu_from_matrix(
         cond_threshold: Pixels whose matrix condition number exceeds this value are masked.
         batch_size: Unused; retained for backward compatibility. The solve now runs as a
             single in-place thread-parallel pass over pixels (no per-batch matrix copies).
+        temperature_only: If ``True``, solve only the I component per hit pixel and leave
+            Q/U at ``_UNSEEN`` (the 3x3 solve would reject every pixel when Q/U are
+            unconstrained, e.g. too few PSBs). Matches qp_planck's non-``polar`` branch.
 
     Returns:
         Tuple ``(t_map, q_map, u_map)`` of float64 HEALPix maps.
@@ -263,7 +279,11 @@ def solve_tqu_from_matrix(
     q_map = np.full(npix, _UNSEEN, dtype=np.float64)
     u_map = np.full(npix, _UNSEEN, dtype=np.float64)
 
-    _solve_tqu_jit(np.ascontiguousarray(matrix, dtype=np.float64), t_map, q_map, u_map, float(cond_threshold))
+    mat = np.ascontiguousarray(matrix, dtype=np.float64)
+    if temperature_only:
+        _solve_t_only_jit(mat, t_map)
+    else:
+        _solve_tqu_jit(mat, t_map, q_map, u_map, float(cond_threshold))
 
     return t_map, q_map, u_map
 

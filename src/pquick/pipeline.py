@@ -679,8 +679,15 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
     assert matrix_all is not None
     assert hits_all is not None
+    # Polarisation needs enough PSBs to constrain Q/U; with <= 2 PSBs the 3x3 solve
+    # would reject every pixel (singular Q/U block), so solve temperature-only and keep
+    # the I map. Matches qp_planck's `polar = sum(psb) > 2` gate.
+    n_psb = sum(1 for d in det_info if is_psb(str(d["name"])))
+    temperature_only = n_psb <= 2
+    if temperature_only:
+        _vprint(verbose, rank, f"Only {n_psb} PSB(s) selected — temperature-only map (Q/U unconstrained)")
     _t0 = _time.perf_counter()
-    t_map, q_map, u_map = solve_tqu_from_matrix(matrix_all)
+    t_map, q_map, u_map = solve_tqu_from_matrix(matrix_all, temperature_only=temperature_only)
     t_solve = _time.perf_counter() - _t0
     nobs00 = matrix_all[:, 0, 0]
 
