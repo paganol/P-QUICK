@@ -577,11 +577,12 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         od_wall = _time.perf_counter() - _od_wall0
         t_od_wall_total += od_wall
         _od_other = od_wall - (t_resamp_od + t_conv_od + t_macc_od + t_flag_od + t_prep_od + t_pix_od)
+        _pix_od = f"  pix={t_pix_od:.2f}s" if hpx_center is not None else ""
         _vprint(
             verbose,
             rank,
             f"  [OD timing] resamp={t_resamp_od:.2f}s  conv={t_conv_od:.2f}s  macc={t_macc_od:.2f}s"
-            f"  flag={t_flag_od:.2f}s  prep={t_prep_od:.2f}s  pix={t_pix_od:.2f}s"
+            f"  flag={t_flag_od:.2f}s  prep={t_prep_od:.2f}s{_pix_od}"
             f"  other={_od_other:.2f}s  od_wall={od_wall:.2f}s",
         )
 
@@ -600,6 +601,9 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             + t_flag_total + t_prep_total + t_pix_total
         )
         _wall = _time.perf_counter() - t_wall0
+        # pix is its own bucket only when centering is on; otherwise pixelisation folds
+        # into macc and t_pix_total is 0, so don't print a noise "pix=0.00s".
+        _pix = f"  pix={t_pix_total:.2f}s" if hpx_center is not None else ""
         _vprint(
             verbose,
             rank,
@@ -610,7 +614,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             f"  macc={t_macc_total:.2f}s"
             f"  flag={t_flag_total:.2f}s"
             f"  prep={t_prep_total:.2f}s"
-            f"  pix={t_pix_total:.2f}s"
+            f"{_pix}"
             f"  od_other={_od_other_total:.2f}s"
             f"  reduce={t_reduce:.2f}s"
             f"  wall={_wall:.2f}s",
@@ -660,6 +664,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         + t_flag_total + t_prep_total + t_pix_total
         + od_other_total + t_reduce + t_solve + t_write
     )
+    _pix = f"  pix={t_pix_total:.2f}s" if hpx_center is not None else ""
     _vprint(
         verbose,
         rank,
@@ -670,7 +675,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         f"  macc={t_macc_total:.2f}s"
         f"  flag={t_flag_total:.2f}s"
         f"  prep={t_prep_total:.2f}s"
-        f"  pix={t_pix_total:.2f}s"
+        f"{_pix}"
         f"  od_other={od_other_total:.2f}s"
         f"  reduce={t_reduce:.2f}s"
         f"  solve={t_solve:.2f}s"
