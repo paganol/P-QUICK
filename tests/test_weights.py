@@ -1,4 +1,4 @@
-from pquick.utilities import detector_map_weight, is_psb
+from pquick.utilities import detector_map_weight, has_detector_weight, is_psb
 
 
 def test_is_psb_matches_qp_planck_flag():
@@ -7,6 +7,14 @@ def test_is_psb_matches_qp_planck_flag():
         assert is_psb(det) is True
     for det in ("143-5", "143-8", "545-1", "857-2"):
         assert is_psb(det) is False
+
+
+def test_non_working_detectors_have_no_weight():
+    # The weight table is the good-detector list; 143-8 and 545-3 (RTS noise) are out.
+    for det in ("143-1a", "143-5", "545-1", "545-4"):
+        assert has_detector_weight(det) is True
+    for det in ("143-8", "545-3"):
+        assert has_detector_weight(det) is False
 
 
 def test_qp_planck_weight_lookup_hfi_psb_arm():

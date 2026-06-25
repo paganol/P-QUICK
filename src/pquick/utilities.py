@@ -128,6 +128,16 @@ def detector_map_weight(detector: str, default: float = 1.0) -> float:
     return float(DETECTOR_WEIGHTS.get(_weight_key(detector), default))
 
 
+def has_detector_weight(detector: str) -> bool:
+    """True if the detector has a map weight, i.e. it is a working Planck detector.
+
+    The weight table is the canonical good-detector list (as in qp_planck's
+    ``list_planck(good=True)``): non-working bolometers — Planck HFI 143-8 and
+    545-3, the RTS-noise detectors — are deliberately absent.
+    """
+    return _weight_key(detector) in DETECTOR_WEIGHTS
+
+
 def is_psb(detector: str) -> bool:
     """True for a polarization-sensitive detector, False for an unpolarized SWB.
 

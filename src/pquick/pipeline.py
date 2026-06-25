@@ -28,7 +28,7 @@ from .io import (
 from .mapmaking import accumulate_tqu_local, add_hits, solve_tqu_from_matrix
 from .pointing import build_pointing_interpolator
 from .quaternion import bore_det_to_angles, bore_det_to_ptg, bore_det_to_ptg_masked, normalize_quaternion, quat_mul
-from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, is_psb, parse_mission_length, print_mpi_distribution, resolve_nthreads
+from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, has_detector_weight, is_psb, parse_mission_length, print_mpi_distribution, resolve_nthreads
 
 
 def _load_bad_ring_intervals(path: str | Path) -> dict[str, np.ndarray]:
@@ -231,9 +231,18 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
     det_info: list[dict[str, object]] = []
     for det in detectors:
-        # A detector can be in the RIMO but have no beam file (e.g. the 143-8 SWB,
-        # excluded from the standard HFI set) — skip it instead of crashing a whole
-        # channel selection. qp_planck likewise drops such detectors.
+        # The weight table is the canonical good-detector list: a detector with no
+        # weight is a non-working bolometer (Planck HFI 143-8, 545-3) that qp_planck
+        # also drops — skip it rather than running it at the fallback weight 1.0.
+        if not has_detector_weight(det):
+            warnings.warn(
+                f"Detector {det!r} has no map weight (non-working detector) — skipping it",
+                UserWarning,
+                stacklevel=2,
+            )
+            continue
+        # A detector can also be in the RIMO with a weight but no beam file — skip it
+        # too instead of crashing a whole channel selection.
         try:
             beam_file = detector_to_beam_file(config.inputs.beams_dir, det)
         except FileNotFoundError:

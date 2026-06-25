@@ -95,7 +95,7 @@ Map accumulation uses the detector weights defined in qp_planck utilities.
 
 1. HFI polarized arms map to horn weights (example: 100-1a and 100-1b use 100-1).
 2. LFI M/S arms map to horn weights (example: LFI27M and LFI27S use LFI27).
-3. Unknown detectors fall back to weight 1.0.
+3. The weight table is the canonical good-detector list (as in qp_planck `list_planck(good=True)`): detectors absent from it are non-working bolometers — Planck HFI `143-8` and `545-3`, the RTS-noise detectors — and are skipped with a warning, not run at a fallback weight.
 
 ## Repository layout
 
