@@ -422,6 +422,13 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 detector_flags[det_name] = hflag
         t_flag_od += _time.perf_counter() - _t0
 
+        # Whole-OD early-out: if the common flag marks every native sample bad, no
+        # detector can have a good sample, so skip the chunk loop (and its per-chunk
+        # boresight interpolation). Falls through to the OD timing accounting below.
+        od_all_flagged = use_flag_od and not np.any(interp.flag_native == 0)
+        if od_all_flagged:
+            _vprint(verbose, rank, f"  {npz_path.name}: no good samples — skipping OD")
+
         chunk_samples = max(1, (interp.n_native + n_chunks_cfg - 1) // n_chunks_cfg)
         n_chunks = (interp.n_native + chunk_samples - 1) // chunk_samples
         # Pre-allocate reusable buffers for the pointing array and psi (mapmaking).
@@ -431,7 +438,8 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         ptg_buf = np.empty((chunk_samples, 3), dtype=np.float64)
         psi_buf = np.empty(chunk_samples, dtype=np.float64)
 
-        for chunk_idx, chunk_start in enumerate(range(0, interp.n_native, chunk_samples), start=1):
+        chunk_starts = () if od_all_flagged else range(0, interp.n_native, chunk_samples)
+        for chunk_idx, chunk_start in enumerate(chunk_starts, start=1):
             chunk_end = min(chunk_start + chunk_samples, interp.n_native)
             chunk_len = chunk_end - chunk_start
             # Interpolate boresight once per chunk; skip the [good] boolean-index copy
