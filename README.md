@@ -9,6 +9,8 @@ P-QUICK is an MPI-ready Python pipeline that:
 4. Convolves sky ALMs with beams using `ducc0.totalconvolve`.
 5. Accumulates the convolved detector timelines into per-pixel polarised normal equations and solves them for condition-masked HEALPix T/Q/U maps.
 
+Full documentation is in [`docs/`](docs/README.md): [methodology](docs/methodology.md), [architecture](docs/architecture.md), [user guide](docs/user-guide.md), [API reference](docs/api-reference.md).
+
 
 ## Install
 
