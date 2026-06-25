@@ -25,9 +25,9 @@ from .io import (
     select_detectors,
     truncate_alm,
 )
-from .mapmaking import accumulate_tqu_matrix, solve_tqu_from_matrix
+from .mapmaking import accumulate_tqu_local, add_hits, solve_tqu_from_matrix
 from .pointing import build_pointing_interpolator
-from .quaternion import bore_det_to_angles, bore_det_to_ptg, normalize_quaternion, quat_mul
+from .quaternion import bore_det_to_angles, bore_det_to_ptg, bore_det_to_ptg_masked, normalize_quaternion, quat_mul
 from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution, resolve_nthreads
 
 
@@ -345,8 +345,12 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
     _vprint(verbose, rank, f"Starting pipeline: {len(local_pointing)} ODs on rank {rank}/{size}")
 
-    matrix_acc = np.zeros((npix, 3, 3), dtype=np.float64)
-    hits_acc = np.zeros(matrix_acc.shape[0], dtype=np.int64)
+    # Per-thread accumulators so the scatter parallelises; summed after the OD loop.
+    # Costs nthreads x (npix,3,3) = nthreads x ~3.6GB at nside 2048, but on real
+    # (spatially local) scan data the parallel scatter is ~4x faster than a single
+    # serial-scatter matrix -- worth the memory. Lower nthreads if a rank is RAM-bound.
+    local_acc = np.zeros((numba.get_num_threads(), npix, 3, 3), dtype=np.float64)
+    hits_acc = np.zeros(npix, dtype=np.int64)
     n_chunks_cfg = int(max(1, config.convolution.chunks))
 
 
@@ -355,6 +359,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     t_setup = _time.perf_counter() - t_wall0
 
     t_resamp_total = t_conv_total = t_macc_total = 0.0
+    t_flag_total = t_prep_total = t_pix_total = 0.0
     t_od_wall_total = 0.0
 
     # The ducc0 convolution cube depends only on (sky, beam, lmax, mmax, epsilon) — not on
@@ -369,7 +374,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
     for od_idx, npz_path in enumerate(local_pointing, start=1):
         _vprint(verbose, rank, f"[OD {od_idx}/{len(local_pointing)}] {npz_path.name}")
-        t_resamp_od = t_conv_od = t_macc_od = 0.0
+        t_resamp_od = t_conv_od = t_macc_od = t_flag_od = t_prep_od = t_pix_od = 0.0
         _od_wall0 = _time.perf_counter()
 
         _t0 = _time.perf_counter()
@@ -381,6 +386,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         del point_us
         t_resamp_od += _time.perf_counter() - _t0
 
+        _t0 = _time.perf_counter()
         detector_flags: dict[str, np.ndarray] = {}
         use_flag_od = config.inputs.flags is not None
         if use_flag_od:
@@ -414,6 +420,31 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                         f"{hflag.size} != {interp.n_native}"
                     )
                 detector_flags[det_name] = hflag
+        t_flag_od += _time.perf_counter() - _t0
+
+        # Whole-OD early-out: skip the chunk loop (and its per-chunk boresight
+        # interpolation) when no detector has a single good sample. Computes the real
+        # good mask per detector exactly as the loop does (common flag | horn flag |
+        # bad-ring), over the full OD, short-circuiting on the first detector with any
+        # good sample. Falls through to the OD timing accounting below.
+        od_all_flagged = False
+        if use_flag_od or bad_ring_intervals is not None:
+            common_bad = (interp.flag_native != 0) if use_flag_od else None
+            od_has_good = False
+            for dinfo in det_info:
+                dname = str(dinfo["name"])
+                bad = _chunk_bad_ring_mask(
+                    bad_ring_intervals, dname, interp.coarse_t0_ns,
+                    interp.native_rate_hz, 0, interp.n_native,
+                )
+                if use_flag_od:
+                    bad = bad | common_bad | (detector_flags[dname] != 0)
+                if not bad.all():
+                    od_has_good = True
+                    break
+            od_all_flagged = not od_has_good
+            if od_all_flagged:
+                _vprint(verbose, rank, f"  {npz_path.name}: no good samples — skipping OD")
 
         chunk_samples = max(1, (interp.n_native + n_chunks_cfg - 1) // n_chunks_cfg)
         n_chunks = (interp.n_native + chunk_samples - 1) // chunk_samples
@@ -424,7 +455,8 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         ptg_buf = np.empty((chunk_samples, 3), dtype=np.float64)
         psi_buf = np.empty(chunk_samples, dtype=np.float64)
 
-        for chunk_idx, chunk_start in enumerate(range(0, interp.n_native, chunk_samples), start=1):
+        chunk_starts = () if od_all_flagged else range(0, interp.n_native, chunk_samples)
+        for chunk_idx, chunk_start in enumerate(chunk_starts, start=1):
             chunk_end = min(chunk_start + chunk_samples, interp.n_native)
             chunk_len = chunk_end - chunk_start
             # Interpolate boresight once per chunk; skip the [good] boolean-index copy
@@ -447,18 +479,20 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 )
             else:
                 _ring_bad_first = np.zeros(chunk_len, dtype=bool)
-            if use_flag_od:
-                _first_flag = detector_flags[_first_det_name][chunk_start:chunk_end]
-                _common_bad = interp.flag_native[chunk_start:chunk_end] != 0
-                _good_first = ~(_common_bad | (_first_flag != 0) | _ring_bad_first)
-            else:
-                _good_first = ~_ring_bad_first
-            _vprint(
-                verbose,
-                rank,
-                f"  [chunk {chunk_idx}/{n_chunks}] samples {chunk_start}:{chunk_end}"
-                f" | good={int(np.count_nonzero(_good_first))}/{chunk_len} | n_native={interp.n_native}",
-            )
+            # common_bad is detector-independent; build once here and reuse in the det loop.
+            _common_bad = interp.flag_native[chunk_start:chunk_end] != 0 if use_flag_od else None
+            if verbose:  # the good-count is log-only — don't pay for it in quiet runs
+                _gf = (
+                    ~(_common_bad | (detector_flags[_first_det_name][chunk_start:chunk_end] != 0) | _ring_bad_first)
+                    if use_flag_od
+                    else ~_ring_bad_first
+                )
+                _vprint(
+                    verbose,
+                    rank,
+                    f"  [chunk {chunk_idx}/{n_chunks}] samples {chunk_start}:{chunk_end}"
+                    f" | good={int(np.count_nonzero(_gf))}/{chunk_len} | n_native={interp.n_native}",
+                )
 
             for det_idx, dinfo in enumerate(det_info, start=1):
                 det_quat = np.asarray(dinfo["quat"], dtype=np.float64)
@@ -473,6 +507,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                     f"    [DET {det_idx}/{len(det_info)}] {det_name}",
                 )
 
+                _t0 = _time.perf_counter()
                 if det_name == _first_det_name:
                     ring_bad = _ring_bad_first
                 elif bad_ring_intervals is not None:
@@ -488,8 +523,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                     ring_bad = _ring_bad_first  # all-zeros, safe to share (never mutated)
                 if use_flag_od:
                     det_flag_chunk = detector_flags[det_name][chunk_start:chunk_end]
-                    common_bad = interp.flag_native[chunk_start:chunk_end] != 0
-                    good = ~(common_bad | (det_flag_chunk != 0) | ring_bad)
+                    good = ~(_common_bad | (det_flag_chunk != 0) | ring_bad)
                 else:
                     good = ~ring_bad
 
@@ -497,7 +531,9 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 if ngood == 0:
                     continue
 
-                q_bore_good = q_bore_all if ngood == chunk_len else q_bore_all[good]
+                # idx of good samples (cheap int array) instead of the 4-wide q_bore[good] copy.
+                good_idx = None if ngood == chunk_len else np.flatnonzero(good)
+                t_prep_od += _time.perf_counter() - _t0
 
                 # Fill pre-allocated buffers directly — no temporary arrays. det_quat is
                 # built from psi_uv only, so psi_buf is the Pxx (polarisation-frame)
@@ -505,23 +541,23 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 # to Pxx in build_polarized_beam_alm, so convolve at psi_pxx = psi_buf
                 # (offset 0) and the beam, convolution and map-making share that frame.
                 _t0 = _time.perf_counter()
-                bore_det_to_ptg(
-                    q_bore_good,
-                    det_quat,
-                    ptg_buf[:ngood],
-                    psi_buf[:ngood],
-                )
+                if good_idx is None:
+                    bore_det_to_ptg(q_bore_all, det_quat, ptg_buf[:ngood], psi_buf[:ngood])
+                else:
+                    bore_det_to_ptg_masked(q_bore_all, det_quat, good_idx, ptg_buf[:ngood], psi_buf[:ngood])
                 t_resamp_od += _time.perf_counter() - _t0
 
                 pix_center = None
                 if hpx_center is not None:
                     # Snap (theta, phi) to HEALPix pixel centers to suppress
                     # subpixel pointing variation before convolution.
+                    _t0 = _time.perf_counter()
                     pix_center = hpx_center.ang2pix(
                         ptg_buf[:ngood, :2],
                         nthreads=nthreads,
                     )
                     ptg_buf[:ngood, :2] = hpx_center.pix2ang(pix_center, nthreads=nthreads)
+                    t_pix_od += _time.perf_counter() - _t0
 
                 _t0 = _time.perf_counter()
                 conv_interp = beam_interp_cache.get(det_name) if cache_interp else None
@@ -548,10 +584,10 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                         ptg_buf[:ngood, :2],
                         nthreads=nthreads,
                     )
-                accumulate_tqu_matrix(matrix_acc, pix, psi_buf[:ngood], np.asarray(tod, dtype=np.float64), det_weight, rho=rho_pol)
-                # bincount is a single C-level pass, much faster than np.add.at's
-                # unbuffered scatter for the per-pixel hit count.
-                hits_acc += np.bincount(pix, minlength=hits_acc.shape[0]).astype(hits_acc.dtype, copy=False)
+                accumulate_tqu_local(local_acc, pix, psi_buf[:ngood], np.asarray(tod, dtype=np.float64), det_weight, rho=rho_pol)
+                # Scatter hits straight into the persistent buffer (O(ngood)); np.bincount
+                # would alloc+zero a full npix array every call (~50 ms at nside 2048).
+                add_hits(hits_acc, pix)
                 del pix, tod
                 t_macc_od += _time.perf_counter() - _t0
 
@@ -560,18 +596,25 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         t_resamp_total += t_resamp_od
         t_conv_total += t_conv_od
         t_macc_total += t_macc_od
+        t_flag_total += t_flag_od
+        t_prep_total += t_prep_od
+        t_pix_total += t_pix_od
         od_wall = _time.perf_counter() - _od_wall0
         t_od_wall_total += od_wall
-        _od_other = od_wall - (t_resamp_od + t_conv_od + t_macc_od)
+        _od_other = od_wall - (t_resamp_od + t_conv_od + t_macc_od + t_flag_od + t_prep_od + t_pix_od)
+        _pix_od = f"  pix={t_pix_od:.2f}s" if hpx_center is not None else ""
         _vprint(
             verbose,
             rank,
             f"  [OD timing] resamp={t_resamp_od:.2f}s  conv={t_conv_od:.2f}s  macc={t_macc_od:.2f}s"
+            f"  flag={t_flag_od:.2f}s  prep={t_prep_od:.2f}s{_pix_od}"
             f"  other={_od_other:.2f}s  od_wall={od_wall:.2f}s",
         )
 
     _vprint(verbose, rank, f"OD loop done. Reducing matrices across {size} rank(s) …")
     _t0 = _time.perf_counter()
+    matrix_acc = local_acc.sum(axis=0)  # reduce per-thread accumulators -> (npix,3,3)
+    del local_acc
     matrix_all = _sum_reduce(comm, matrix_acc, rank)
     del matrix_acc
     hits_all = _sum_reduce(comm, hits_acc, rank)
@@ -580,8 +623,14 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     _vprint(verbose, rank, f"Reduce done in {t_reduce:.2f}s. Solving T/Q/U …")
 
     if rank != 0:
-        _od_other_total = t_od_wall_total - (t_resamp_total + t_conv_total + t_macc_total)
+        _od_other_total = t_od_wall_total - (
+            t_resamp_total + t_conv_total + t_macc_total
+            + t_flag_total + t_prep_total + t_pix_total
+        )
         _wall = _time.perf_counter() - t_wall0
+        # pix is its own bucket only when centering is on; otherwise pixelisation folds
+        # into macc and t_pix_total is 0, so don't print a noise "pix=0.00s".
+        _pix = f"  pix={t_pix_total:.2f}s" if hpx_center is not None else ""
         _vprint(
             verbose,
             rank,
@@ -590,6 +639,9 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             f"  resamp={t_resamp_total:.2f}s"
             f"  conv={t_conv_total:.2f}s"
             f"  macc={t_macc_total:.2f}s"
+            f"  flag={t_flag_total:.2f}s"
+            f"  prep={t_prep_total:.2f}s"
+            f"{_pix}"
             f"  od_other={_od_other_total:.2f}s"
             f"  reduce={t_reduce:.2f}s"
             f"  wall={_wall:.2f}s",
@@ -626,15 +678,20 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
     t_write = _time.perf_counter() - _t0
 
     # Reconcile against the stopwatch: wall is the true elapsed time inside run_pipeline;
-    # the section timers (resamp/conv/macc/reduce/solve/write) plus setup and od_other
-    # (per-OD flag I/O, sample masking, boresight copies) should sum to it, leaving only
+    # the section timers (resamp/conv/macc/flag/prep/pix/reduce/solve/write) plus setup and
+    # od_other (residual per-OD work not in a named bucket) should sum to it, leaving only
     # a small "unaccounted" remainder (import-triggered lazy work, GC, etc.).
-    od_other_total = t_od_wall_total - (t_resamp_total + t_conv_total + t_macc_total)
+    od_other_total = t_od_wall_total - (
+        t_resamp_total + t_conv_total + t_macc_total
+        + t_flag_total + t_prep_total + t_pix_total
+    )
     wall = _time.perf_counter() - t_wall0
     accounted = (
         t_setup + t_resamp_total + t_conv_total + t_macc_total
+        + t_flag_total + t_prep_total + t_pix_total
         + od_other_total + t_reduce + t_solve + t_write
     )
+    _pix = f"  pix={t_pix_total:.2f}s" if hpx_center is not None else ""
     _vprint(
         verbose,
         rank,
@@ -643,6 +700,9 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         f"  resamp={t_resamp_total:.2f}s"
         f"  conv={t_conv_total:.2f}s"
         f"  macc={t_macc_total:.2f}s"
+        f"  flag={t_flag_total:.2f}s"
+        f"  prep={t_prep_total:.2f}s"
+        f"{_pix}"
         f"  od_other={od_other_total:.2f}s"
         f"  reduce={t_reduce:.2f}s"
         f"  solve={t_solve:.2f}s"

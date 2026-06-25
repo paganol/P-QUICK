@@ -385,6 +385,83 @@ def bore_det_to_ptg(
     _bore_det_to_ptg_jit(q_bore, det_quat, ptg, psi_out)
 
 
+@_njit(fastmath=True, cache=True, parallel=True)
+def _bore_det_to_ptg_masked_jit(
+    q_bore: np.ndarray,
+    det_quat: np.ndarray,
+    idx: np.ndarray,
+    ptg: np.ndarray,
+    psi_out: np.ndarray,
+) -> None:
+    # ponytail: body duplicated from _bore_det_to_ptg_jit so that hot path stays
+    # untouched; extract a shared inline device-fn if a third copy ever appears.
+    dx = det_quat[0]; dy = det_quat[1]; dz = det_quat[2]; dw = det_quat[3]
+    TWO_PI = 2.0 * math.pi
+    for j in _prange(idx.shape[0]):
+        i = idx[j]
+        qx0 = q_bore[i, 0]; qy0 = q_bore[i, 1]
+        qz0 = q_bore[i, 2]; qw0 = q_bore[i, 3]
+
+        qx = qw0 * dx + qx0 * dw + qy0 * dz - qz0 * dy
+        qy = qw0 * dy - qx0 * dz + qy0 * dw + qz0 * dx
+        qz = qw0 * dz + qx0 * dy - qy0 * dx + qz0 * dw
+        qw = qw0 * dw - qx0 * dx - qy0 * dy - qz0 * dz
+
+        nrm = math.sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
+        if nrm > 1e-15:
+            qx /= nrm; qy /= nrm; qz /= nrm; qw /= nrm
+
+        bx = 2.0 * (qx * qz + qy * qw)
+        by = 2.0 * (qy * qz - qx * qw)
+        bz = 1.0 - 2.0 * (qx * qx + qy * qy)
+
+        t = math.acos(max(-1.0, min(1.0, bz)))
+        p = math.atan2(by, bx)
+        if p < 0.0:
+            p += TWO_PI
+
+        xx = 1.0 - 2.0 * (qy * qy + qz * qz)
+        xy = 2.0 * (qx * qy + qz * qw)
+        xz = 2.0 * (qx * qz - qy * qw)
+
+        sin_th = math.sqrt(max(0.0, bx*bx + by*by))
+        if sin_th > 0.0:
+            inv_s = 1.0 / sin_th
+            cos_ph = bx * inv_s
+            sin_ph = by * inv_s
+        else:
+            cos_ph = 1.0
+            sin_ph = 0.0
+
+        x_t = xx * bz * cos_ph + xy * bz * sin_ph - xz * sin_th
+        x_p = -xx * sin_ph + xy * cos_ph
+        ps = math.atan2(x_p, x_t)
+
+        ptg[j, 0] = t
+        ptg[j, 1] = p
+        ptg[j, 2] = ps
+        psi_out[j] = ps
+
+
+def bore_det_to_ptg_masked(
+    q_bore: np.ndarray,
+    det_quat: np.ndarray,
+    idx: np.ndarray,
+    ptg: np.ndarray,
+    psi_out: np.ndarray,
+) -> None:
+    """Like :func:`bore_det_to_ptg` but reads only ``q_bore[idx]``, writing compacted.
+
+    Avoids materialising the 4-wide ``q_bore[mask]`` copy when samples are flagged: pass
+    ``idx = np.flatnonzero(good)`` and pre-sliced ``ptg[:idx.size]`` / ``psi_out[:idx.size]``.
+    Output row ``j`` corresponds to input sample ``idx[j]``.
+    """
+    q_bore = np.ascontiguousarray(q_bore, dtype=np.float64)
+    det_quat = np.ascontiguousarray(det_quat, dtype=np.float64)
+    idx = np.ascontiguousarray(idx, dtype=np.int64)
+    _bore_det_to_ptg_masked_jit(q_bore, det_quat, idx, ptg, psi_out)
+
+
 def quaternion_to_thetaphipsi(q: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Convert unit quaternions to HEALPix sky angles ``(theta, phi, psi)``.
 
