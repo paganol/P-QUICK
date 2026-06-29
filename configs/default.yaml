@@ -26,9 +26,6 @@ convolution:
   epsilon: 1.0e-5
   chunks: 1
   beam_normalization: unit_integral
-  # Diagnostic only: constant offset (deg) added to the convolution psi (beam
-  # orientation), not the map-making psi. Keep 0.0 for production.
-  extra_psi_deg: 0.0
 
 map:
   nside: 512
