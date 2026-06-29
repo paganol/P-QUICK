@@ -40,6 +40,28 @@ def test_accumulate_tqu_local_matches_serial():
     assert np.allclose(local.sum(axis=0), serial)
 
 
+def test_temperature_only_solve_recovers_I_where_3x3_rejects():
+    # An unpolarized detector (rho=0) gives a singular Q/U block: the 3x3 solve masks
+    # every pixel, while the temperature-only solve recovers I = weighted mean of d.
+    from pquick.mapmaking import accumulate_tqu_matrix, init_map_matrix, solve_tqu_from_matrix
+
+    rng = np.random.default_rng(0)
+    n, npix = 5000, 12
+    pix = rng.integers(0, npix, n).astype(np.int64)
+    psi = rng.uniform(0, np.pi, n)
+    I = 4.0
+    tod = np.full(n, I)                      # pure temperature signal, rho=0
+    m = init_map_matrix(1)                   # nside=1 -> npix=12
+    accumulate_tqu_matrix(m, pix, psi, tod, det_weight=2.0, rho=0.0)
+
+    t3, q3, u3 = solve_tqu_from_matrix(m)                       # 3x3: all rejected
+    assert np.all(t3 < -1e29)
+    t1, q1, u1 = solve_tqu_from_matrix(m, temperature_only=True)
+    hit = m[:, 0, 0] > 0
+    assert np.allclose(t1[hit], I, atol=1e-9)                  # I recovered
+    assert np.all(q1 < -1e29) and np.all(u1 < -1e29)           # Q/U left UNSEEN
+
+
 def test_add_hits_matches_bincount():
     # persistent serial scatter must equal np.bincount, including accumulation across calls.
     from pquick.mapmaking import add_hits

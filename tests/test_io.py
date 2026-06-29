@@ -85,6 +85,14 @@ def test_load_pointing_npz_defaults_to_zero_flag_without_flag_key(tmp_path: Path
     np.testing.assert_array_equal(p.flag, np.array([0, 0, 0], dtype=np.int8))
 
 
+def test_select_detectors_detset_alias_is_case_insensitive():
+    # Mixed-case detset aliases (e.g. 100dsA) must resolve regardless of case.
+    alld = ["100-1a", "100-1b", "100-2a", "100-2b", "100-3a", "100-3b", "100-4a", "100-4b"]
+    expected = ["100-1a", "100-1b", "100-4a", "100-4b"]
+    for tag in ("100dsA", "100dsa", "100DSA"):
+        assert select_detectors(alld, DetectorSelection(channel=tag)) == expected
+
+
 def test_select_detectors_rejects_channel_and_detectors_together():
     all_detectors = ["100-1a", "100-1b", "100-2a"]
     selection = DetectorSelection(channel="100ghz", detectors=["100-1a"])

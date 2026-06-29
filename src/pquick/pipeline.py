@@ -28,7 +28,7 @@ from .io import (
 from .mapmaking import accumulate_tqu_local, add_hits, solve_tqu_from_matrix
 from .pointing import build_pointing_interpolator
 from .quaternion import bore_det_to_angles, bore_det_to_ptg, bore_det_to_ptg_masked, normalize_quaternion, quat_mul
-from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, parse_mission_length, print_mpi_distribution, resolve_nthreads
+from .utilities import build_pointing_file_paths, detector_map_weight, estimate_memory_per_rank_mb, extract_od_from_pointing_filename, has_detector_weight, is_psb, parse_mission_length, print_mpi_distribution, resolve_nthreads
 
 
 def _load_bad_ring_intervals(path: str | Path) -> dict[str, np.ndarray]:
@@ -231,7 +231,27 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
     det_info: list[dict[str, object]] = []
     for det in detectors:
-        beam_file = detector_to_beam_file(config.inputs.beams_dir, det)
+        # The weight table is the canonical good-detector list: a detector with no
+        # weight is a non-working bolometer (Planck HFI 143-8, 545-3) that qp_planck
+        # also drops — skip it rather than running it at the fallback weight 1.0.
+        if not has_detector_weight(det):
+            warnings.warn(
+                f"Detector {det!r} has no map weight (non-working detector) — skipping it",
+                UserWarning,
+                stacklevel=2,
+            )
+            continue
+        # A detector can also be in the RIMO with a weight but no beam file — skip it
+        # too instead of crashing a whole channel selection.
+        try:
+            beam_file = detector_to_beam_file(config.inputs.beams_dir, det)
+        except FileNotFoundError:
+            warnings.warn(
+                f"No beam file for detector {det!r} in {config.inputs.beams_dir} — skipping it",
+                UserWarning,
+                stacklevel=2,
+            )
+            continue
         beam_alm = load_beam_alm(
             beam_file,
             lmax=config.convolution.lmax,
@@ -239,6 +259,15 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         )
         dmeta = det_meta.get(det, {})
         psi_pol_rad = float(dmeta.get("psi_pol_rad", 0.0))
+        # Polarisation efficiency used by both the beam E/B scaling and the map-making
+        # weight. use_cross_pol=True -> RIMO rho=(1-eps)/(1+eps) (qp_planck rhohit=IMO);
+        # False -> ideal, but ideal still means rho=0 for an unpolarised SWB, not 1
+        # (qp_planck rhohit=Ideal uses the PSB flag: 1 for PSB, 0 for SWB).
+        rho_eff = (
+            float(dmeta.get("rho_pol", 1.0))
+            if config.map.use_cross_pol
+            else (1.0 if is_psb(det) else 0.0)
+        )
         # Scalar Planck blm (Dxx) -> spin-2 polarised [T, E, B] beam in the Pxx frame.
         beam_alm = build_polarized_beam_alm(
             beam_alm,
@@ -247,10 +276,8 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
             mmax=config.convolution.mmax,
             psi_uv_rad=float(dmeta.get("psi_uv_rad", 0.0)),
             # Match the map-making polarisation efficiency so EE/BB are not
-            # inflated by 1/rho^2 (1.0 when use_cross_pol is off).
-            rho_pol=(
-                float(dmeta.get("rho_pol", 1.0)) if config.map.use_cross_pol else 1.0
-            ),
+            # inflated by 1/rho^2.
+            rho_pol=rho_eff,
             nthreads=nthreads,
         )
         _vprint(
@@ -274,12 +301,14 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 "weight": detector_map_weight(det),
                 "psi_pol_rad": psi_pol_rad,
                 "psi_uv_rad": float(dmeta.get("psi_uv_rad", 0.0)),
-                "rho_pol": (
-                    float(dmeta.get("rho_pol", 1.0))
-                    if config.map.use_cross_pol
-                    else 1.0
-                ),
+                "rho_pol": rho_eff,
             }
+        )
+
+    if not det_info:
+        raise FileNotFoundError(
+            f"No detectors have beam files in {config.inputs.beams_dir} for the current "
+            f"selection ({len(detectors)} detector(s) requested) — check beams_dir."
         )
 
     mission = config.inputs.mission_length or "full"
@@ -650,8 +679,15 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
     assert matrix_all is not None
     assert hits_all is not None
+    # Polarisation needs enough PSBs to constrain Q/U; with <= 2 PSBs the 3x3 solve
+    # would reject every pixel (singular Q/U block), so solve temperature-only and keep
+    # the I map. Matches qp_planck's `polar = sum(psb) > 2` gate.
+    n_psb = sum(1 for d in det_info if is_psb(str(d["name"])))
+    temperature_only = n_psb <= 2
+    if temperature_only:
+        _vprint(verbose, rank, f"Only {n_psb} PSB(s) selected — temperature-only map (Q/U unconstrained)")
     _t0 = _time.perf_counter()
-    t_map, q_map, u_map = solve_tqu_from_matrix(matrix_all)
+    t_map, q_map, u_map = solve_tqu_from_matrix(matrix_all, temperature_only=temperature_only)
     t_solve = _time.perf_counter() - _t0
     nobs00 = matrix_all[:, 0, 0]
 
