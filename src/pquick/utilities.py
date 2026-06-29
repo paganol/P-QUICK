@@ -53,53 +53,43 @@ DETSETS["353dsB"] = DETSETS["353ds2"] + ("353-2", "353-8")
 DETSETS["353psb"] = DETSETS["353ds1"] + DETSETS["353ds2"]
 DETSETS["353ghz"] = DETSETS["353psb"] + DETSETS["353swb"]
 
-# Weights ported from qp_planck/qp_planck/utilities.py detector_weights.
-DETECTOR_WEIGHTS: dict[str, float] = {
-    "LFI27": 0.40164e06,
-    "LFI28": 0.36900e06,
-    "LFI24": 0.12372e06,
-    "LFI25": 0.14049e06,
-    "LFI26": 0.11233e06,
-    "LFI18": 53650.0,
-    "LFI19": 42141.0,
-    "LFI20": 36579.0,
-    "LFI21": 50355.0,
-    "LFI22": 49363.0,
-    "LFI23": 47966.0,
-    "100-1": 0.76343e06,
-    "100-2": 0.12661e07,
-    "100-3": 0.10631e07,
-    "100-4": 0.10532e07,
-    "143-1": 0.16407e07,
-    "143-2": 0.18577e07,
-    "143-3": 0.16439e07,
-    "143-4": 0.14458e07,
-    "143-5": 0.27630e07,
-    "143-6": 0.26942e07,
-    "143-7": 0.28599e07,
-    "217-1": 0.11058e07,
-    "217-2": 0.10261e07,
-    "217-3": 0.10958e07,
-    "217-4": 0.10593e07,
-    "217-5": 0.67318e06,
-    "217-6": 0.71092e06,
-    "217-7": 0.76576e06,
-    "217-8": 0.71226e06,
-    "353-1": 0.12829e06,
-    "353-2": 0.13475e06,
-    "353-3": 48067.0,
-    "353-4": 42187.0,
-    "353-5": 56914.0,
-    "353-6": 25293.0,
-    "353-7": 87730.0,
-    "353-8": 74453.0,
-    "545-1": 4475.5,
-    "545-2": 5540.3,
-    "545-4": 4321.0,
-    "857-1": 6.8895,
-    "857-2": 6.3108,
-    "857-3": 6.5964,
-    "857-4": 3.6785,
+# NPIPE per-detector map weights: both arms of a horn share the horn weight
+# (ported from qp_planck/qp_planck/utilities.py detector_weights). Non-working
+# bolometers (143-8, 545-3) are absent, so they get skipped.
+NPIPE_DETECTOR_WEIGHTS: dict[str, float] = {
+    "100-1a": 763430.0, "100-1b": 763430.0,
+    "100-2a": 1266100.0, "100-2b": 1266100.0,
+    "100-3a": 1063100.0, "100-3b": 1063100.0,
+    "100-4a": 1053200.0, "100-4b": 1053200.0,
+    "143-1a": 1640700.0, "143-1b": 1640700.0,
+    "143-2a": 1857700.0, "143-2b": 1857700.0,
+    "143-3a": 1643900.0, "143-3b": 1643900.0,
+    "143-4a": 1445800.0, "143-4b": 1445800.0,
+    "143-5": 2763000.0, "143-6": 2694200.0, "143-7": 2859900.0,
+    "217-1": 1105800.0, "217-2": 1026100.0, "217-3": 1095800.0, "217-4": 1059300.0,
+    "217-5a": 673180.0, "217-5b": 673180.0,
+    "217-6a": 710920.0, "217-6b": 710920.0,
+    "217-7a": 765760.0, "217-7b": 765760.0,
+    "217-8a": 712260.0, "217-8b": 712260.0,
+    "353-1": 128290.0, "353-2": 134750.0,
+    "353-3a": 48067.0, "353-3b": 48067.0,
+    "353-4a": 42187.0, "353-4b": 42187.0,
+    "353-5a": 56914.0, "353-5b": 56914.0,
+    "353-6a": 25293.0, "353-6b": 25293.0,
+    "353-7": 87730.0, "353-8": 74453.0,
+    "545-1": 4475.5, "545-2": 5540.3, "545-4": 4321.0,
+    "857-1": 6.8895, "857-2": 6.3108, "857-3": 6.5964, "857-4": 3.6785,
+    "LFI18M": 53650.0, "LFI18S": 53650.0,
+    "LFI19M": 42141.0, "LFI19S": 42141.0,
+    "LFI20M": 36579.0, "LFI20S": 36579.0,
+    "LFI21M": 50355.0, "LFI21S": 50355.0,
+    "LFI22M": 49363.0, "LFI22S": 49363.0,
+    "LFI23M": 47966.0, "LFI23S": 47966.0,
+    "LFI24M": 123720.0, "LFI24S": 123720.0,
+    "LFI25M": 140490.0, "LFI25S": 140490.0,
+    "LFI26M": 112330.0, "LFI26S": 112330.0,
+    "LFI27M": 401640.0, "LFI27S": 401640.0,
+    "LFI28M": 369000.0, "LFI28S": 369000.0,
 }
 
 MISSION_LENGTH_RANGES: dict[str, tuple[int, int]] = {
@@ -114,18 +104,78 @@ MISSION_LENGTH_RANGES: dict[str, tuple[int, int]] = {
 }
 
 
-def _weight_key(detector: str) -> str:
-    det = detector.strip()
-    if det.startswith("LFI") and det[-1:] in {"M", "S"}:
-        return det[:-1]
-    if "-" in det and det[-1:].lower() in {"a", "b"}:
-        return det[:-1]
-    return det
+# PR3 per-detector map weights.
+#  - HFI: SRoll per-detector (calib/NEP)^2 (DX11 calib / RD12 NEP) — differs between
+#    a horn's a/b arms, unlike NPIPE.
+#  - LFI: Planck-2018 (aa33293-18) per-horn Eq. 7 weight 2/(sigma_M^2 + sigma_S^2)
+#    from the Table 4 white-noise levels [uK^2/Hz]; shared by a horn's M/S arms, e.g.
+#    LFI27 = 2/(281.5 + 302.8). 143-8/545-3 absent (dead). Absolute scale is arbitrary
+#    (it cancels in the per-pixel solve); only the within-channel ratios matter.
+PR3_DETECTOR_WEIGHTS: dict[str, float] = {
+    "100-1a": 162673.0, "100-1b": 227632.3,
+    "100-2a": 674779.9, "100-2b": 346375.2,
+    "100-3a": 903876.6, "100-3b": 610547.8,
+    "100-4a": 416489.2, "100-4b": 226073.2,
+    "143-1a": 1702989.0, "143-1b": 704902.4,
+    "143-2a": 1740084.0, "143-2b": 1509531.0,
+    "143-3a": 1435034.0, "143-3b": 1530800.0,
+    "143-4a": 1276859.0, "143-4b": 1069561.0,
+    "143-5": 2115344.0, "143-6": 2045240.0, "143-7": 2669092.0,
+    "217-1": 1200040.0, "217-2": 1120057.0, "217-3": 1249481.0, "217-4": 1408729.0,
+    "217-5a": 459494.2, "217-5b": 608457.2,
+    "217-6a": 480378.1, "217-6b": 528185.9,
+    "217-7a": 634943.2, "217-7b": 654692.2,
+    "217-8a": 492636.1, "217-8b": 464691.9,
+    "353-1": 166463.3, "353-2": 158481.0,
+    "353-3a": 30471.63, "353-3b": 42703.47,
+    "353-4a": 41951.33, "353-4b": 37735.2,
+    "353-5a": 44020.63, "353-5b": 42320.42,
+    "353-6a": 20896.82, "353-6b": 22874.54,
+    "353-7": 109668.2, "353-8": 91233.83,
+    "545-1": 2.572538, "545-2": 3.164496, "545-4": 2.7508,
+    "857-1": 2.494976, "857-2": 2.561947, "857-3": 2.430096, "857-4": 1.28278,
+    "LFI18M": 0.00204248, "LFI18S": 0.00204248,
+    "LFI19M": 0.00176507, "LFI19S": 0.00176507,
+    "LFI20M": 0.00165714, "LFI20S": 0.00165714,
+    "LFI21M": 0.00197981, "LFI21S": 0.00197981,
+    "LFI22M": 0.00195886, "LFI22S": 0.00195886,
+    "LFI23M": 0.00191755, "LFI23S": 0.00191755,
+    "LFI24M": 0.00231669, "LFI24S": 0.00231669,
+    "LFI25M": 0.00246853, "LFI25S": 0.00246853,
+    "LFI26M": 0.00220872, "LFI26S": 0.00220872,
+    "LFI27M": 0.00342290, "LFI27S": 0.00342290,
+    "LFI28M": 0.00331126, "LFI28S": 0.00331126,
+}
+
+_WEIGHT_SETS: dict[str, dict[str, float]] = {
+    "NPIPE": NPIPE_DETECTOR_WEIGHTS,
+    "PR4": NPIPE_DETECTOR_WEIGHTS,  # PR4 == NPIPE (same data release)
+    "PR3": PR3_DETECTOR_WEIGHTS,
+}
 
 
-def detector_map_weight(detector: str, default: float = 1.0) -> float:
-    """Return the inverse-noise map weight for a Planck detector."""
-    return float(DETECTOR_WEIGHTS.get(_weight_key(detector), default))
+def detector_map_weight(detector: str, weights: str = "NPIPE", default: float = 1.0) -> float:
+    """Per-detector inverse-noise map weight for the chosen weight set (``NPIPE``/``PR3``)."""
+    return _WEIGHT_SETS[weights.upper()].get(detector.strip(), default)
+
+
+def has_detector_weight(detector: str, weights: str = "NPIPE") -> bool:
+    """True if the detector is in the chosen weight set, i.e. a working Planck detector.
+
+    The set is the canonical good-detector list (cf qp_planck's ``list_planck(good=True)``):
+    non-working bolometers — Planck HFI 143-8 and 545-3, the RTS-noise detectors — are
+    deliberately absent.
+    """
+    return detector.strip() in _WEIGHT_SETS[weights.upper()]
+
+
+def is_psb(detector: str) -> bool:
+    """True for a polarization-sensitive detector, False for an unpolarized SWB.
+
+    Matches qp_planck: the name ends in ``a``/``b`` (HFI PSB arm) or ``M``/``S``
+    (LFI radiometer arm); spider-web bolometers (e.g. ``143-5``) do not.
+    """
+    return detector.strip()[-1:] in "abMS"
 
 
 def parse_mission_length(value: str) -> tuple[int, int]:

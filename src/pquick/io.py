@@ -328,8 +328,11 @@ def select_detectors(all_detectors: list[str], selection: DetectorSelection) -> 
 
     if selection.channel:
         tag = selection.channel.strip().lower()
-        if tag in DETSETS:
-            allowed = set(DETSETS[tag])
+        # Case-insensitive detset lookup: DETSETS keys are mixed-case (e.g. "100dsA"),
+        # so match on the lowercased key rather than the raw tag.
+        detset = next((v for k, v in DETSETS.items() if k.lower() == tag), None)
+        if detset is not None:
+            allowed = set(detset)
             selected = [d for d in selected if d in allowed]
         else:
             selected = [d for d in selected if d.lower().startswith(tag)]

@@ -32,12 +32,13 @@ Important fields:
 6. `inputs.flags`: optional prefix for per-OD flag NPZ files, resolved as `{flags}{freq:03d}ghz_od_{od:04d}.npz`; when unset or a file is missing, all samples are treated as good.
 7. `inputs.bad_rings_file`: optional TOAST/NPIPE-style bad-ring interval text file (`<det_or_ALL> <tstart_s> <tstop_s>` rows), applied on top of the flags.
 8. `inputs.rescale`: optional per-component multipliers for the input sky `(almT, almE, almB)` — `null` = `(1, 1, 1)`, a scalar `s` = `(s, s, s)`, or `[x, y, z]`. Useful for isolating components (e.g. `[0, 1, 0]` = E-only).
+8b. `inputs.weights`: detector map-weight set. `NPIPE` (default; `PR4` is an alias) uses the per-horn qp_planck/NPIPE table; `PR3` uses the SRoll per-detector `(calib/NEP)²` weights for HFI and the Planck-2018 per-horn `2/(σ_M² + σ_S²)` weights for LFI (Eq. 7 / Table 4 of aa33293-18).
 9. `detector_selection`: choose either a channel/detset alias or an explicit detector list.
 10. `convolution.lmax` / `convolution.mmax`: harmonic limits.
 11. `convolution.cache_interpolator`: `true` (default) builds each detector's `ducc0` convolution cube once and reuses it across every OD/chunk on a rank (the cube depends only on the sky, beam, `lmax`, `mmax` and `epsilon` — not on the pointing), removing the dominant per-OD rebuild. It keeps one cube resident per detector (~0.4 GB at lmax=1024/mmax=6, ~1–2 GB at lmax=2048); set `false` to rebuild per OD for lower memory.
 12. `nthreads`: thread count for `ducc0` and the numba-parallel resampling / map-making kernels (`0` = all available cores). Trade off against the number of MPI ranks per node. Note: map-making keeps a per-thread `(nthreads, npix, 3, 3)` accumulator so the scatter parallelises (≈4× faster than a single serial-scatter matrix on real scan data), so its memory scales with `nthreads` — about 3.6 GB per thread at nside 2048; lower `nthreads` (or `map.nside`) if a rank is memory-bound.
 13. `map.nside`: output HEALPix map resolution.
-14. `map.use_cross_pol`: `true` (default) weights the map-making polarisation by the per-detector `rho = (1-eps)/(1+eps)` from the RIMO (= qp_planck `rhohit: IMO`); `false` assumes ideal detectors (`rho = 1`, qp_planck `rhohit: Ideal`). Temperature is unaffected.
+14. `map.use_cross_pol`: `true` (default) weights the map-making polarisation by the per-detector `rho = (1-eps)/(1+eps)` from the RIMO (= qp_planck `rhohit: IMO`); `false` assumes ideal detectors (qp_planck `rhohit: Ideal`), which uses the PSB flag — `rho = 1` for polarisation-sensitive detectors and `rho = 0` for unpolarised SWBs (e.g. 143-5/6/7), not `1` for all. Temperature is unaffected.
 15. `resampling.coordinate_system`: pointing frame (`ecliptic` or `galactic`).
 
 The per-detector `psi_uv` is always removed from the beam-shape convolution orientation (kept only in the map-making polarization angle), so a horn's two PSB arms convolve their near-identical beams co-oriented on the sky instead of 90° apart — the scan-relative frame qp_planck uses. Without it the orthogonal arms cancel the channel beam ellipticity and the temperature window is wrong.
@@ -97,7 +98,9 @@ Map accumulation uses the detector weights defined in qp_planck utilities.
 
 1. HFI polarized arms map to horn weights (example: 100-1a and 100-1b use 100-1).
 2. LFI M/S arms map to horn weights (example: LFI27M and LFI27S use LFI27).
-3. Unknown detectors fall back to weight 1.0.
+3. The weight table is the canonical good-detector list (as in qp_planck `list_planck(good=True)`): detectors absent from it are non-working bolometers — Planck HFI `143-8` and `545-3`, the RTS-noise detectors — and are skipped with a warning, not run at a fallback weight.
+
+When 2 or fewer polarisation-sensitive detectors are selected, Q/U are unconstrained, so the map-making automatically solves **temperature-only** (I map; Q/U left unseen) instead of rejecting every pixel in the 3×3 solve. This matches qp_planck's `polar = sum(psb) > 2` gate.
 
 ## Repository layout
 
