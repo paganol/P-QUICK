@@ -51,6 +51,14 @@ def test_pr3_lfi_horn_weight_eq7():
     assert detector_map_weight("LFI27S", "PR3") == detector_map_weight("LFI27M", "PR3")
 
 
+def test_pr4_is_alias_for_npipe():
+    from pquick.config import _parse_weights
+
+    assert _parse_weights("PR4") == "NPIPE"
+    assert detector_map_weight("143-1a", "PR4") == detector_map_weight("143-1a", "NPIPE")
+    assert has_detector_weight("143-1a", "PR4") is True
+
+
 def test_unknown_detector_not_in_weight_set():
     # Unknown detectors are absent from both sets (so the pipeline skips them) and
     # fall back to the default weight, uniformly across modes.

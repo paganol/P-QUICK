@@ -193,12 +193,17 @@ def _parse_rescale(value: Any) -> tuple[float, float, float]:
 
 
 def _parse_weights(value: Any) -> str:
-    """Parse ``inputs.weights`` into ``"NPIPE"`` or ``"PR3"`` (default ``"NPIPE"``)."""
+    """Parse ``inputs.weights`` into ``"NPIPE"`` or ``"PR3"`` (default ``"NPIPE"``).
+
+    ``"PR4"`` is accepted as an alias for ``"NPIPE"`` (NPIPE is the PR4 release).
+    """
     if value is None:
         return "NPIPE"
     w = str(value).strip().upper()
+    if w == "PR4":
+        return "NPIPE"
     if w not in ("NPIPE", "PR3"):
-        raise ValueError(f"inputs.weights must be 'NPIPE' or 'PR3'; got {value!r}")
+        raise ValueError(f"inputs.weights must be 'NPIPE', 'PR4', or 'PR3'; got {value!r}")
     return w
 
 

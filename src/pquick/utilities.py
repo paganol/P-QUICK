@@ -149,6 +149,7 @@ PR3_DETECTOR_WEIGHTS: dict[str, float] = {
 
 _WEIGHT_SETS: dict[str, dict[str, float]] = {
     "NPIPE": NPIPE_DETECTOR_WEIGHTS,
+    "PR4": NPIPE_DETECTOR_WEIGHTS,  # PR4 == NPIPE (same data release)
     "PR3": PR3_DETECTOR_WEIGHTS,
 }
 
