@@ -45,10 +45,14 @@ Start from `configs/default.yaml`. Full key list:
 - `bad_rings_file` — optional bad-ring interval file, applied on top of flags.
 - `rescale` — per-component `(almT, almE, almB)` multipliers. `null` = `(1,1,1)`,
   scalar `s` = `(s,s,s)`, or `[x,y,z]`. E.g. `[0,1,0]` = E-only.
+- `weights` — detector map-weight set: `NPIPE` (default; `PR4` is an alias) for the
+  per-horn qp_planck/NPIPE table, or `PR3` for SRoll per-detector `(calib/NEP)²`
+  (HFI) plus Planck-2018 per-horn `2/(σ_M²+σ_S²)` (LFI). See
+  [methodology](methodology.md#detector-weighting).
 
 ### `detector_selection`
-- `channel` — keep detectors whose name starts with this prefix (e.g. `"100"`),
-  **or**
+- `channel` — keep detectors whose name starts with this prefix (e.g. `"100"`), or
+  a detset alias (`100ds1`, `143dsA`, `143swb`, `100ghz`, …; case-insensitive), **or**
 - `detectors` — explicit allowlist. Specify only one of the two.
 
 ### `resampling`
@@ -70,7 +74,8 @@ Start from `configs/default.yaml`. Full key list:
 - `nside` — output HEALPix resolution. Required.
 - `nest` — NESTED ordering instead of RING. Default `false`.
 - `use_cross_pol` — weight Q/U by RIMO `ρ = (1−ε)/(1+ε)` (`true`, = qp_planck
-  `rhohit: IMO`) or assume ideal `ρ = 1` (`false`). T is unaffected.
+  `rhohit: IMO`) or use the ideal PSB flag (`false`, = qp_planck `rhohit: Ideal`:
+  `ρ = 1` for PSBs, `ρ = 0` for unpolarised SWBs). T is unaffected.
 
 ### top level
 - `nthreads` — threads for ducc0 + numba. `0` = all available cores. Map-making

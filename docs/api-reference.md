@@ -58,14 +58,21 @@ full argument/return details; this page is the map.
   per-thread `(nthreads, npix, 3, 3)` variant; sum over axis 0 after the loop.
 - `add_hits(hits, pix)` — serial scatter of per-sample hit counts into a
   persistent buffer.
-- `solve_tqu_from_matrix(matrix, cond_threshold=1e10) -> (t, q, u)` — per-pixel
-  3×3 solve with condition-number masking.
+- `solve_tqu_from_matrix(matrix, cond_threshold=1e10, temperature_only=False) ->
+  (t, q, u)` — per-pixel 3×3 solve with condition-number masking;
+  `temperature_only` recovers only I (Q/U left unseen) for low-PSB selections.
 - `accumulate_simple_iqu(...)` / `finalize_simple_iqu(acc)` — simpler
   binned-IQU path (numerator/denominator accumulators).
 
 ## utilities
 
-- `detector_map_weight(detector, default=1.0) -> float` — qp_planck horn weight.
+- `NPIPE_DETECTOR_WEIGHTS`, `PR3_DETECTOR_WEIGHTS` — the two explicit per-detector
+  weight tables (same detector universe; `PR4` aliases `NPIPE`).
+- `detector_map_weight(detector, weights="NPIPE", default=1.0) -> float` — weight
+  for the chosen set.
+- `has_detector_weight(detector, weights="NPIPE") -> bool` — whether the detector
+  is in the set (a working detector); used to skip 143-8/545-3.
+- `is_psb(detector) -> bool` — polarisation-sensitive (PSB/LFI arm) vs SWB.
 - `parse_mission_length(value) -> (od_start, od_end)`,
   `filter_pointing_files_by_mission_length(files, mission_length)`,
   `build_pointing_file_paths(prefix, od_start, od_end)`,

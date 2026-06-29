@@ -10,7 +10,7 @@
 | `pointing.py` | Native-rate pointing reconstruction (`PointingInterpolator` over ducc0). |
 | `convolution.py` | Thin `ducc0.totalconvolve` wrapper: build the cube, evaluate at pointings. |
 | `mapmaking.py` | Per-pixel polarised normal-equation accumulation and the 3×3 solve. |
-| `utilities.py` | Detector weights, mission-length parsing, MPI/thread/memory helpers. |
+| `utilities.py` | Detector weight sets (`NPIPE_DETECTOR_WEIGHTS` / `PR3_DETECTOR_WEIGHTS`), detset aliases, mission-length parsing, MPI/thread/memory helpers. |
 | `pipeline.py` | MPI-aware orchestrator tying it all together; CLI entry `main`. |
 
 ## Data flow
@@ -71,6 +71,11 @@ OD list (utilities) ──► [OD loop, distributed across MPI ranks]
 
 - **MPI**: ODs are distributed across ranks; each rank accumulates its own
   normal-equation matrix and hit map, reduced to rank 0 for the solve and write.
+
+- **Detector selection is filtered to working detectors**: a selected detector
+  with no entry in the chosen weight set (143-8, 545-3) or no beam file is skipped
+  with a warning. The solve auto-switches to **temperature-only** when ≤ 2 PSBs are
+  present (Q/U unconstrained), recovering I and leaving Q/U unseen.
 
 ## Pointing
 

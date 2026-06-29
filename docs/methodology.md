@@ -28,16 +28,22 @@ A polarisation-sensitive detector pointing at pixel `p` with polarisation angle
 d = I + ρ (Q cos2ψ + U sin2ψ),   ρ = (1 − ε)/(1 + ε)
 ```
 
-where `ε` is the cross-polar leakage from the RIMO. `ρ = 1` is an ideal detector
-(`map.use_cross_pol: false`); `ρ` from the RIMO matches qp_planck's
-`rhohit: IMO`. Note `ρ` does **not** affect the recovered temperature — the I–I
-element of the normal matrix is `ρ`-independent — only Q/U. This model is
-implemented in [`accumulate_tqu_matrix`](api-reference.md#mapmaking).
+where `ε` is the cross-polar leakage from the RIMO. With `map.use_cross_pol: true`
+(default) `ρ = (1−ε)/(1+ε)` from the RIMO, matching qp_planck's `rhohit: IMO`;
+with `false` it follows qp_planck's `rhohit: Ideal` — the PSB flag, so `ρ = 1` for
+polarisation-sensitive detectors and `ρ = 0` for unpolarised spider-web
+bolometers (SWBs, e.g. 143-5/6/7), **not** `1` for all. Note `ρ` does **not**
+affect the recovered temperature — the I–I element of the normal matrix is
+`ρ`-independent — only Q/U. This model is implemented in
+[`accumulate_tqu_matrix`](api-reference.md#mapmaking).
 
 The per-pixel normal equations stack the weighted pointing matrix `AᵀN⁻¹A`
 (upper 2×2 block, `A = [1, ρcos2ψ, ρsin2ψ]`) and the weighted RHS `AᵀN⁻¹d`,
 then solve the 3×3 system per pixel. Pixels with too few crossing angles are
-rejected by a condition-number cut (`solve_tqu_from_matrix`).
+rejected by a condition-number cut (`solve_tqu_from_matrix`). If 2 or fewer
+polarisation-sensitive detectors are selected, Q/U are unconstrained and the
+solve falls back to **temperature-only** (recovering I per hit pixel, Q/U left
+unseen) — qp_planck's `polar = sum(psb) > 2` gate.
 
 ## Frame conventions
 
@@ -76,6 +82,27 @@ polarisation). This is an exact spin-2 construction (`d^ℓ_{m,2}` radial
 functions), which differs from a scalar `ndb = 1` beam by the irreducible
 spin-2-vs-spin-0 term — the residual seen when comparing TB/BB/EB against a
 qp_planck scalar-blm run is exactly this construction difference, not a bug.
+
+## Detector weighting
+
+Each detector enters the map with an inverse-noise weight `w` (the `N⁻¹` above),
+selected by `inputs.weights`:
+
+- **NPIPE** (default; `PR4` alias) — the per-horn qp_planck/NPIPE weights, applied
+  to every arm of a horn.
+- **PR3** — SRoll's per-detector `(calib/NEP)²` for HFI (a horn's two arms carry
+  different weights), and the Planck-2018 per-horn weight `2/(σ_M² + σ_S²)`
+  (aa33293-18 Eq. 7, from the Table 4 white-noise levels) for LFI.
+
+Both are explicit per-detector tables over the same detector list. Only the
+*relative* weights within a channel matter — a global rescale cancels in the
+per-pixel solve. The detector list is the good-detector set (qp_planck
+`list_planck(good=True)`): the RTS-noise bolometers 143-8 and 545-3 are absent
+and get skipped, as are detectors with no beam file.
+
+The unpolarised SWBs are not special-cased: their small RIMO `ρ` (≈0.03–0.08, or
+exactly 0 in `use_cross_pol: false`) suppresses their polarised beam and Q/U
+response, so they contribute essentially only to temperature — matching qp_planck.
 
 ## What is and isn't approximated
 
