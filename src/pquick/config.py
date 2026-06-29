@@ -143,10 +143,14 @@ class OutputConfig:
     Attributes:
         output_dir: Directory where output FITS maps are written.
         output_prefix: Filename stem used when constructing the output FITS map name.
+        extended_outputs: If ``True``, also write the ``_hits``, ``_wpol`` and
+            ``_nobs00`` diagnostic maps alongside ``_iqu``. Default ``False`` (only
+            the T/Q/U map is written).
     """
 
     output_dir: str = "outputs"
     output_prefix: str = "pquick"
+    extended_outputs: bool = False
 
 
 @dataclass
@@ -256,6 +260,7 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
         output=OutputConfig(
             output_dir=str(output_cfg.get("output_dir", "outputs")),
             output_prefix=str(output_cfg.get("output_prefix", map_cfg.get("output_prefix", "pquick"))),
+            extended_outputs=bool(output_cfg.get("extended_outputs", False)),
         ),
         verbose=bool(data.get("verbose", False)),
         nthreads=int(data.get("nthreads", 0)),

@@ -99,7 +99,10 @@ mpirun -n 4 pquick-run --config configs/default.yaml
 
 Written under `output.output_dir` with stem `output.output_prefix`:
 
-- `<prefix>_iqu.fits` — the T/Q/U map.
+- `<prefix>_iqu.fits` — the T/Q/U map (always written).
+
+With `output.extended_outputs: true` (default `false`) the diagnostic maps are also written:
+
 - `<prefix>_hits.fits` — per-pixel hit count.
 - `<prefix>_wpol.fits`, `<prefix>_nobs00.fits` — polarisation weight / `AᵀA[0,0]`
   diagnostics.

@@ -59,7 +59,10 @@ mpirun -n 4 pquick-run --config configs/default.yaml
 
 Outputs are written under `output.output_dir` as:
 
-1. `<prefix>_iqu.fits`
+1. `<prefix>_iqu.fits` — always written.
+
+With `output.extended_outputs: true` (default `false`), three diagnostic maps are also written:
+
 2. `<prefix>_hits.fits`
 3. `<prefix>_wpol.fits`
 4. `<prefix>_nobs00.fits`
