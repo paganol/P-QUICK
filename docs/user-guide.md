@@ -84,6 +84,8 @@ Start from `configs/default.yaml`. Full key list:
 - `verbose` — detailed per-OD progress logging.
 - `output.output_dir` / `output.output_prefix` — where products go and their
   filename stem.
+- `output.extended_outputs` — also write the `_hits`/`_wpol`/`_nobs00` diagnostic
+  maps. Default `false` (only `_iqu`).
 
 ## Run
 
