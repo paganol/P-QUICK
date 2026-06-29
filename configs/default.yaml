@@ -25,6 +25,7 @@ convolution:
   mmax: 16
   epsilon: 1.0e-5
   chunks: 1
+  cache_interpolator: true
   beam_normalization: unit_integral
 
 map:
@@ -38,3 +39,5 @@ map:
 output:
   output_dir: outputs
   output_prefix: pquick_demo
+  # Also write the _hits, _wpol and _nobs00 diagnostic maps (default: only _iqu).
+  extended_outputs: false

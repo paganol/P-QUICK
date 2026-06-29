@@ -100,9 +100,12 @@ class ConvolutionConfig:
             convolution cube once and reuse it across every OD/chunk on the rank. The
             cube depends only on the sky, beam, ``lmax``, ``mmax`` and ``epsilon`` — not
             on the pointing — so this removes a redundant per-OD rebuild (the dominant
-            convolution cost) at the price of holding one cube per detector resident
-            (~0.4 GB at lmax=1024/mmax=6, ~1-2 GB at lmax=2048). Set ``False`` to rebuild
-            per OD (lower memory, slower).
+            convolution cost) at the price of holding one cube resident **per detector**
+            (~0.4 GB at lmax=1024/mmax=6, ~1-2 GB at lmax=2048). The cubes are held on
+            each rank, so the resident memory is roughly ``(selected detectors) x cube``
+            per rank — e.g. a full 143 GHz channel (11 detectors) at lmax=2048 is
+            ~11-22 GB per rank, on top of the map-making accumulator. Set ``False`` to
+            rebuild per OD (lower memory, slower) if a rank is memory-bound.
 
     The scalar Planck blm is always synthesised into a spin-2 ``[T, E, B]`` beam
     (:func:`~pquick.io.build_polarized_beam_alm`): the ellipse is carried Dxx -> Pxx
@@ -143,10 +146,14 @@ class OutputConfig:
     Attributes:
         output_dir: Directory where output FITS maps are written.
         output_prefix: Filename stem used when constructing the output FITS map name.
+        extended_outputs: If ``True``, also write the ``_hits``, ``_wpol`` and
+            ``_nobs00`` diagnostic maps alongside ``_iqu``. Default ``False`` (only
+            the T/Q/U map is written).
     """
 
     output_dir: str = "outputs"
     output_prefix: str = "pquick"
+    extended_outputs: bool = False
 
 
 @dataclass
@@ -256,6 +263,7 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
         output=OutputConfig(
             output_dir=str(output_cfg.get("output_dir", "outputs")),
             output_prefix=str(output_cfg.get("output_prefix", map_cfg.get("output_prefix", "pquick"))),
+            extended_outputs=bool(output_cfg.get("extended_outputs", False)),
         ),
         verbose=bool(data.get("verbose", False)),
         nthreads=int(data.get("nthreads", 0)),

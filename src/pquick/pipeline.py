@@ -696,9 +696,6 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
 
     prefix = config.output.output_prefix
     map_path = outdir / f"{prefix}_iqu.fits"
-    hits_path = outdir / f"{prefix}_hits.fits"
-    wpol_path = outdir / f"{prefix}_wpol.fits"
-    nobs_path = outdir / f"{prefix}_nobs00.fits"
 
     _t0 = _time.perf_counter()
     hp.write_map(
@@ -708,9 +705,11 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         dtype=np.float64,
         nest=config.map.nest,
     )
-    hp.write_map(str(hits_path), hits_all.astype(np.float64), overwrite=True, dtype=np.float64, nest=config.map.nest)
-    hp.write_map(str(wpol_path), nobs00, overwrite=True, dtype=np.float64, nest=config.map.nest)
-    hp.write_map(str(nobs_path), nobs00, overwrite=True, dtype=np.float64, nest=config.map.nest)
+    # The hits/wpol/nobs00 diagnostic maps are written only when requested.
+    if config.output.extended_outputs:
+        hp.write_map(str(outdir / f"{prefix}_hits.fits"), hits_all.astype(np.float64), overwrite=True, dtype=np.float64, nest=config.map.nest)
+        hp.write_map(str(outdir / f"{prefix}_wpol.fits"), nobs00, overwrite=True, dtype=np.float64, nest=config.map.nest)
+        hp.write_map(str(outdir / f"{prefix}_nobs00.fits"), nobs00, overwrite=True, dtype=np.float64, nest=config.map.nest)
     t_write = _time.perf_counter() - _t0
 
     # Reconcile against the stopwatch: wall is the true elapsed time inside run_pipeline;

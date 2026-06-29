@@ -112,6 +112,36 @@ output:
     assert cfg.output.output_prefix == "custom_prefix"
 
 
+def test_load_config_extended_outputs(tmp_path: Path):
+    base = """
+inputs:
+  sky_alm: inputs/sky/alms_cmb0000.fits
+  beams_dir: inputs/beams
+  rimo_file: inputs/RIMOs/RIMO_HFI_npipe5v16_symmetrized.fits
+
+detector_selection:
+  channel: null
+  detectors: []
+
+convolution:
+  lmax: 16
+  mmax: 6
+
+map:
+  nside: 512
+
+output:
+  output_dir: outputs
+"""
+    default_cfg = tmp_path / "default.yaml"
+    default_cfg.write_text(base.strip(), encoding="utf-8")
+    assert load_config(default_cfg).output.extended_outputs is False
+
+    on_cfg = tmp_path / "on.yaml"
+    on_cfg.write_text((base + "  extended_outputs: true\n").strip(), encoding="utf-8")
+    assert load_config(on_cfg).output.extended_outputs is True
+
+
 def test_load_config_defaults_beam_normalization_to_unit_integral(tmp_path: Path):
     cfg_path = tmp_path / "beam_norm.yaml"
     cfg_path.write_text(

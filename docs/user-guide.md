@@ -67,8 +67,13 @@ Start from `configs/default.yaml`. Full key list:
 - `chunks` — interpolation calls per OD (1 = whole OD at once). Default `1`.
 - `beam_normalization` — `unit_integral` (default; constant sky stays constant)
   or `raw`.
-- `cache_interpolator` — build each detector's convolution cube once and reuse
-  across ODs. Default `true`. Set `false` for lower memory, slower runs.
+- `cache_interpolator` — build each detector's convolution cube once and reuse it
+  across all ODs/chunks (the cube is pointing-independent), removing the dominant
+  per-OD rebuild. Default `true`. One cube is held resident **per detector, per
+  rank** (~0.4 GB at lmax=1024, ~1–2 GB at lmax=2048), so cache RAM ≈ `(selected
+  detectors) × cube` per rank (e.g. ~11–22 GB for a full 143 GHz channel at
+  lmax=2048), on top of the map-making accumulator. Set `false` to rebuild per OD
+  for lower memory, slower runs.
 
 ### `map`
 - `nside` — output HEALPix resolution. Required.
@@ -84,6 +89,8 @@ Start from `configs/default.yaml`. Full key list:
 - `verbose` — detailed per-OD progress logging.
 - `output.output_dir` / `output.output_prefix` — where products go and their
   filename stem.
+- `output.extended_outputs` — also write the `_hits`/`_wpol`/`_nobs00` diagnostic
+  maps. Default `false` (only `_iqu`).
 
 ## Run
 
@@ -99,7 +106,10 @@ mpirun -n 4 pquick-run --config configs/default.yaml
 
 Written under `output.output_dir` with stem `output.output_prefix`:
 
-- `<prefix>_iqu.fits` — the T/Q/U map.
+- `<prefix>_iqu.fits` — the T/Q/U map (always written).
+
+With `output.extended_outputs: true` (default `false`) the diagnostic maps are also written:
+
 - `<prefix>_hits.fits` — per-pixel hit count.
 - `<prefix>_wpol.fits`, `<prefix>_nobs00.fits` — polarisation weight / `AᵀA[0,0]`
   diagnostics.
