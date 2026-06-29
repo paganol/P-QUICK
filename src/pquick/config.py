@@ -49,6 +49,10 @@ class InputsConfig:
             ``(1, 1, 1)`` (no rescaling); a scalar ``s`` means ``(s, s, s)``. Useful
             for isolating components, e.g. ``[1, 0, 0]`` -> T-only, ``[0, 1, 0]`` ->
             E-only.
+        weights: Detector map-weight set. ``"NPIPE"`` (default) uses the per-horn
+            qp_planck/NPIPE weight table; ``"PR3"`` uses the SRoll per-detector
+            ``(calib/NEP)^2`` weights for HFI and the Planck-2018 per-horn
+            ``2/(sigma_M^2 + sigma_S^2)`` weights for LFI.
     """
 
     sky_alm: str
@@ -59,6 +63,7 @@ class InputsConfig:
     flags: str | None = None
     bad_rings_file: str | None = None
     rescale: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    weights: str = "NPIPE"
 
 
 @dataclass
@@ -187,6 +192,16 @@ def _parse_rescale(value: Any) -> tuple[float, float, float]:
     return tuple(float(x) for x in seq)  # type: ignore[return-value]
 
 
+def _parse_weights(value: Any) -> str:
+    """Parse ``inputs.weights`` into ``"NPIPE"`` or ``"PR3"`` (default ``"NPIPE"``)."""
+    if value is None:
+        return "NPIPE"
+    w = str(value).strip().upper()
+    if w not in ("NPIPE", "PR3"):
+        raise ValueError(f"inputs.weights must be 'NPIPE' or 'PR3'; got {value!r}")
+    return w
+
+
 def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
     detsel = data.get("detector_selection") or {}
     map_cfg = data.get("map", {}) or {}
@@ -210,6 +225,7 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
                 else None
             ),
             rescale=_parse_rescale(data["inputs"].get("rescale")),
+            weights=_parse_weights(data["inputs"].get("weights")),
         ),
         detector_selection=DetectorSelection(
             channel=channel,

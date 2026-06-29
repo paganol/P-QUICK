@@ -114,6 +114,55 @@ MISSION_LENGTH_RANGES: dict[str, tuple[int, int]] = {
 }
 
 
+# PR3 HFI weights: SRoll per-detector (calib/NEP)^2 (DX11 calib / RD12 NEP), keyed by
+# detector arm — unlike NPIPE these differ between a/b. 143-8/545-3 absent (dead). The
+# absolute scale is arbitrary (it cancels in the per-pixel solve); only the relative
+# weighting within a channel matters.
+HFI_PR3_WEIGHTS: dict[str, float] = {
+    "100-1a": 1.626730e05, "100-1b": 2.276323e05,
+    "100-2a": 6.747799e05, "100-2b": 3.463752e05,
+    "100-3a": 9.038766e05, "100-3b": 6.105478e05,
+    "100-4a": 4.164892e05, "100-4b": 2.260732e05,
+    "143-1a": 1.702989e06, "143-1b": 7.049024e05,
+    "143-2a": 1.740084e06, "143-2b": 1.509531e06,
+    "143-3a": 1.435034e06, "143-3b": 1.530800e06,
+    "143-4a": 1.276859e06, "143-4b": 1.069561e06,
+    "143-5": 2.115344e06, "143-6": 2.045240e06, "143-7": 2.669092e06,
+    "217-1": 1.200040e06, "217-2": 1.120057e06, "217-3": 1.249481e06, "217-4": 1.408729e06,
+    "217-5a": 4.594942e05, "217-5b": 6.084572e05,
+    "217-6a": 4.803781e05, "217-6b": 5.281859e05,
+    "217-7a": 6.349432e05, "217-7b": 6.546922e05,
+    "217-8a": 4.926361e05, "217-8b": 4.646919e05,
+    "353-1": 1.664633e05, "353-2": 1.584810e05,
+    "353-3a": 3.047163e04, "353-3b": 4.270347e04,
+    "353-4a": 4.195133e04, "353-4b": 3.773520e04,
+    "353-5a": 4.402063e04, "353-5b": 4.232042e04,
+    "353-6a": 2.089682e04, "353-6b": 2.287454e04,
+    "353-7": 1.096682e05, "353-8": 9.123383e04,
+    "545-1": 2.572538e00, "545-2": 3.164496e00, "545-4": 2.750800e00,
+    "857-1": 2.494976e00, "857-2": 2.561947e00, "857-3": 2.430096e00, "857-4": 1.282780e00,
+}
+
+# PR3 LFI: per-radiometer white-noise level sigma^2 [uK^2/Hz] from Planck 2018 LFI
+# (aa33293-18) Table 4. The per-horn weight is Eq. 7: w = 2 / (sigma_M^2 + sigma_S^2).
+LFI_PR3_WHITE_NOISE: dict[str, float] = {
+    # 70 GHz
+    "LFI18M": 512.5, "LFI18S": 466.7,
+    "LFI19M": 578.9, "LFI19S": 554.2,
+    "LFI20M": 586.9, "LFI20S": 620.0,
+    "LFI21M": 450.4, "LFI21S": 559.8,
+    "LFI22M": 490.1, "LFI22S": 530.9,
+    "LFI23M": 503.9, "LFI23S": 539.1,
+    # 44 GHz
+    "LFI24M": 462.8, "LFI24S": 400.5,
+    "LFI25M": 415.2, "LFI25S": 395.0,
+    "LFI26M": 482.6, "LFI26S": 422.9,
+    # 30 GHz
+    "LFI27M": 281.5, "LFI27S": 302.8,
+    "LFI28M": 317.9, "LFI28S": 286.1,
+}
+
+
 def _weight_key(detector: str) -> str:
     det = detector.strip()
     if det.startswith("LFI") and det[-1:] in {"M", "S"}:
@@ -123,19 +172,44 @@ def _weight_key(detector: str) -> str:
     return det
 
 
-def detector_map_weight(detector: str, default: float = 1.0) -> float:
-    """Return the inverse-noise map weight for a Planck detector."""
+def _lfi_pr3_horn_weight(detector: str) -> float:
+    """Planck-2018 LFI per-horn weight (Eq. 7): ``2 / (sigma_M^2 + sigma_S^2)``."""
+    horn = _weight_key(detector)
+    m, s = LFI_PR3_WHITE_NOISE.get(horn + "M"), LFI_PR3_WHITE_NOISE.get(horn + "S")
+    if m is None or s is None:
+        raise ValueError(
+            f"PR3 LFI white-noise for horn {horn!r} is not set — populate "
+            f"LFI_PR3_WHITE_NOISE from Table 4 of aa33293-18 (radiometers {horn}M/{horn}S)."
+        )
+    return 2.0 / (m + s)
+
+
+def detector_map_weight(detector: str, weights: str = "NPIPE", default: float = 1.0) -> float:
+    """Return the inverse-noise map weight for a Planck detector.
+
+    ``weights="NPIPE"`` uses the per-horn qp_planck/NPIPE table; ``"PR3"`` uses the
+    SRoll per-detector ``(calib/NEP)^2`` for HFI and the Planck-2018 per-horn
+    ``2/(sigma_M^2 + sigma_S^2)`` (Eq. 7) for LFI.
+    """
+    if weights.upper() == "PR3":
+        if detector.strip().startswith("LFI"):
+            return _lfi_pr3_horn_weight(detector)
+        return float(HFI_PR3_WEIGHTS.get(detector.strip(), default))
     return float(DETECTOR_WEIGHTS.get(_weight_key(detector), default))
 
 
-def has_detector_weight(detector: str) -> bool:
+def has_detector_weight(detector: str, weights: str = "NPIPE") -> bool:
     """True if the detector has a map weight, i.e. it is a working Planck detector.
 
-    The weight table is the canonical good-detector list (as in qp_planck's
+    The weight set is the canonical good-detector list (cf qp_planck's
     ``list_planck(good=True)``): non-working bolometers — Planck HFI 143-8 and
-    545-3, the RTS-noise detectors — are deliberately absent.
+    545-3, the RTS-noise detectors — are deliberately absent. For PR3, LFI horns are
+    recognised via the NPIPE table (their white-noise values are resolved later).
     """
-    return _weight_key(detector) in DETECTOR_WEIGHTS
+    det = detector.strip()
+    if weights.upper() == "PR3" and not det.startswith("LFI"):
+        return det in HFI_PR3_WEIGHTS
+    return _weight_key(det) in DETECTOR_WEIGHTS
 
 
 def is_psb(detector: str) -> bool:

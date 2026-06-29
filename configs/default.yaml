@@ -5,6 +5,10 @@ inputs:
   mission_length: full
   pointings: inputs/pointings/pointing_
   flags: inputs/flags/flags_
+  # Detector map weights: NPIPE (per-horn qp_planck/NPIPE table, default) or
+  # PR3 (SRoll per-detector (calib/NEP)^2 for HFI; Planck-2018 per-horn
+  # 2/(sigma_M^2+sigma_S^2), Eq. 7 of aa33293-18, for LFI).
+  weights: NPIPE
 
 detector_selection:
   channel: null
