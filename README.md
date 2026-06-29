@@ -9,6 +9,8 @@ P-QUICK is an MPI-ready Python pipeline that:
 4. Convolves sky ALMs with beams using `ducc0.totalconvolve`.
 5. Accumulates the convolved detector timelines into per-pixel polarised normal equations and solves them for condition-masked HEALPix T/Q/U maps.
 
+Full documentation is in [`docs/`](docs/README.md): [methodology](docs/methodology.md), [architecture](docs/architecture.md), [user guide](docs/user-guide.md), [API reference](docs/api-reference.md).
+
 
 ## Install
 
@@ -89,14 +91,16 @@ Notes:
 2. Native-rate boresight interpolation is performed by `ducc0.pointingprovider.PointingProvider`.
 3. Native pointing is defined in the ecliptic frame.
 4. Supported output pointing frames are `ecliptic` and `galactic`.
+5. An OD with no good samples for any detector (flags + bad rings remove everything) is skipped before any boresight interpolation or convolution.
 
 ## Detector weighting
 
-Map accumulation uses the detector weights defined in qp_planck utilities.
+The weight set is chosen by `inputs.weights` (field 8b). Both are explicit per-detector tables (`NPIPE_DETECTOR_WEIGHTS` / `PR3_DETECTOR_WEIGHTS` in `utilities.py`) covering the same detector list, resolved by a single lookup:
 
-1. HFI polarized arms map to horn weights (example: 100-1a and 100-1b use 100-1).
-2. LFI M/S arms map to horn weights (example: LFI27M and LFI27S use LFI27).
-3. The weight table is the canonical good-detector list (as in qp_planck `list_planck(good=True)`): detectors absent from it are non-working bolometers — Planck HFI `143-8` and `545-3`, the RTS-noise detectors — and are skipped with a warning, not run at a fallback weight.
+1. **NPIPE** (default; `PR4` is an alias) — per-horn qp_planck/NPIPE weights, the same value for every arm of a horn (e.g. 100-1a/1b share 100-1; LFI27M/S share LFI27).
+2. **PR3** — per-detector SRoll `(calib/NEP)²` for HFI (a horn's two arms differ), and per-horn Planck-2018 `2/(σ_M² + σ_S²)` (Eq. 7 / Table 4 of aa33293-18) for LFI.
+
+The detector list is the canonical good-detector set (as in qp_planck `list_planck(good=True)`): detectors absent from it are non-working bolometers — Planck HFI `143-8` and `545-3`, the RTS-noise detectors — and are skipped with a warning rather than run at a fallback weight. Detectors that have no beam file in `beams_dir` are skipped the same way.
 
 When 2 or fewer polarisation-sensitive detectors are selected, Q/U are unconstrained, so the map-making automatically solves **temperature-only** (I map; Q/U left unseen) instead of rejecting every pixel in the 3×3 solve. This matches qp_planck's `polar = sum(psb) > 2` gate.
 
