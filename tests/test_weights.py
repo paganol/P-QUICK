@@ -51,7 +51,20 @@ def test_pr3_lfi_horn_weight_eq7():
     assert detector_map_weight("LFI27S", "PR3") == detector_map_weight("LFI27M", "PR3")
 
 
-def test_pr3_lfi_unknown_horn_raises():
-    # A radiometer absent from Table 4 must fail loudly, not mis-weight silently.
-    with pytest.raises(ValueError, match="white-noise"):
-        detector_map_weight("LFI99M", "PR3")
+def test_unknown_detector_not_in_weight_set():
+    # Unknown detectors are absent from both sets (so the pipeline skips them) and
+    # fall back to the default weight, uniformly across modes.
+    for mode in ("NPIPE", "PR3"):
+        assert has_detector_weight("LFI99M", mode) is False
+        assert detector_map_weight("LFI99M", mode, default=2.5) == 2.5
+
+
+def test_npipe_is_per_detector_with_shared_horn_value():
+    # NPIPE is a per-detector table; both arms carry the same horn weight.
+    from pquick.utilities import NPIPE_DETECTOR_WEIGHTS, PR3_DETECTOR_WEIGHTS
+
+    assert "143-1a" in NPIPE_DETECTOR_WEIGHTS and "143-1b" in NPIPE_DETECTOR_WEIGHTS
+    assert NPIPE_DETECTOR_WEIGHTS["143-1a"] == NPIPE_DETECTOR_WEIGHTS["143-1b"]
+    assert "143-8" not in NPIPE_DETECTOR_WEIGHTS  # dead detector absent
+    # both tables cover the same detector universe
+    assert set(NPIPE_DETECTOR_WEIGHTS) == set(PR3_DETECTOR_WEIGHTS)
