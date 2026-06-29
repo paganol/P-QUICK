@@ -25,6 +25,7 @@ convolution:
   mmax: 16
   epsilon: 1.0e-5
   chunks: 1
+  cache_interpolator: true
   beam_normalization: unit_integral
 
 map:
