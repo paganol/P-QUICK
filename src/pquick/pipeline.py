@@ -234,7 +234,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
         # The weight table is the canonical good-detector list: a detector with no
         # weight is a non-working bolometer (Planck HFI 143-8, 545-3) that qp_planck
         # also drops — skip it rather than running it at the fallback weight 1.0.
-        if not has_detector_weight(det):
+        if not has_detector_weight(det, config.inputs.weights):
             warnings.warn(
                 f"Detector {det!r} has no map weight (non-working detector) — skipping it",
                 UserWarning,
@@ -298,7 +298,7 @@ def run_pipeline(config: PipelineConfig) -> Path | None:
                 "name": det,
                 "beam_alm": beam_alm,
                 "quat": dquat,
-                "weight": detector_map_weight(det),
+                "weight": detector_map_weight(det, config.inputs.weights),
                 "psi_pol_rad": psi_pol_rad,
                 "psi_uv_rad": float(dmeta.get("psi_uv_rad", 0.0)),
                 "rho_pol": rho_eff,

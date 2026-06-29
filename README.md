@@ -30,6 +30,7 @@ Important fields:
 6. `inputs.flags`: optional prefix for per-OD flag NPZ files, resolved as `{flags}{freq:03d}ghz_od_{od:04d}.npz`; when unset or a file is missing, all samples are treated as good.
 7. `inputs.bad_rings_file`: optional TOAST/NPIPE-style bad-ring interval text file (`<det_or_ALL> <tstart_s> <tstop_s>` rows), applied on top of the flags.
 8. `inputs.rescale`: optional per-component multipliers for the input sky `(almT, almE, almB)` — `null` = `(1, 1, 1)`, a scalar `s` = `(s, s, s)`, or `[x, y, z]`. Useful for isolating components (e.g. `[0, 1, 0]` = E-only).
+8b. `inputs.weights`: detector map-weight set. `NPIPE` (default; `PR4` is an alias) uses the per-horn qp_planck/NPIPE table; `PR3` uses the SRoll per-detector `(calib/NEP)²` weights for HFI and the Planck-2018 per-horn `2/(σ_M² + σ_S²)` weights for LFI (Eq. 7 / Table 4 of aa33293-18).
 9. `detector_selection`: choose either a channel/detset alias or an explicit detector list.
 10. `convolution.lmax` / `convolution.mmax`: harmonic limits.
 11. `convolution.cache_interpolator`: `true` (default) builds each detector's `ducc0` convolution cube once and reuses it across every OD/chunk on a rank (the cube depends only on the sky, beam, `lmax`, `mmax` and `epsilon` — not on the pointing), removing the dominant per-OD rebuild. It keeps one cube resident per detector (~0.4 GB at lmax=1024/mmax=6, ~1–2 GB at lmax=2048); set `false` to rebuild per OD for lower memory.
