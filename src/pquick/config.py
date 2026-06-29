@@ -100,9 +100,12 @@ class ConvolutionConfig:
             convolution cube once and reuse it across every OD/chunk on the rank. The
             cube depends only on the sky, beam, ``lmax``, ``mmax`` and ``epsilon`` — not
             on the pointing — so this removes a redundant per-OD rebuild (the dominant
-            convolution cost) at the price of holding one cube per detector resident
-            (~0.4 GB at lmax=1024/mmax=6, ~1-2 GB at lmax=2048). Set ``False`` to rebuild
-            per OD (lower memory, slower).
+            convolution cost) at the price of holding one cube resident **per detector**
+            (~0.4 GB at lmax=1024/mmax=6, ~1-2 GB at lmax=2048). The cubes are held on
+            each rank, so the resident memory is roughly ``(selected detectors) x cube``
+            per rank — e.g. a full 143 GHz channel (11 detectors) at lmax=2048 is
+            ~11-22 GB per rank, on top of the map-making accumulator. Set ``False`` to
+            rebuild per OD (lower memory, slower) if a rank is memory-bound.
 
     The scalar Planck blm is always synthesised into a spin-2 ``[T, E, B]`` beam
     (:func:`~pquick.io.build_polarized_beam_alm`): the ellipse is carried Dxx -> Pxx
