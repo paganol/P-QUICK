@@ -270,7 +270,22 @@ def load_rimo_detectors(rimo_path: str | Path) -> dict[str, dict[str, np.ndarray
     """
     out: dict[str, dict[str, np.ndarray | float]] = {}
     with fits.open(rimo_path) as hdul:
-        tab = hdul[1].data
+        # Find the extension that actually holds the per-detector focal-plane pointing,
+        # rather than assuming hdul[1] — official RIMOs (e.g. HFI_RIMO_R3.00) keep these
+        # in a named extension, or may not carry them at all.
+        tab = None
+        for hdu in hdul:
+            cols = getattr(getattr(hdu, "columns", None), "names", None)
+            if cols and {"PHI_UV", "THETA_UV", "PSI_UV"} <= {n.upper() for n in cols}:
+                tab = hdu.data
+                break
+        if tab is None:
+            exts = [(i, h.name, list(getattr(getattr(h, "columns", None), "names", []) or [])) for i, h in enumerate(hdul)]
+            raise ValueError(
+                f"No extension with PHI_UV/THETA_UV/PSI_UV columns in RIMO {rimo_path}. "
+                f"P-QUICK needs per-detector focal-plane pointing (the npipe-symmetrized "
+                f"RIMO provides it). Extensions found: {exts}"
+            )
         names = [n.upper() for n in tab.columns.names]
 
         det_col = "DETECTOR" if "DETECTOR" in names else names[0]
