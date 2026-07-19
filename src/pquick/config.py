@@ -28,7 +28,6 @@ class InputsConfig:
     Attributes:
         sky_alm: Sky ALM file path.
         beams_dir: Directory with detector beam ALM FITS files.
-        rimo_file: RIMO FITS path.
         mission_length: OD selector (e.g. ``"full"``, ``"survey 2"``,
             or explicit ``"91-99"``). Defaults to ``"full"`` when omitted.
         pointings: Prefix for pointing NPZ files. The pipeline appends
@@ -49,21 +48,24 @@ class InputsConfig:
             ``(1, 1, 1)`` (no rescaling); a scalar ``s`` means ``(s, s, s)``. Useful
             for isolating components, e.g. ``[1, 0, 0]`` -> T-only, ``[0, 1, 0]`` ->
             E-only.
-        weights: Detector map-weight set. ``"NPIPE"`` (default) uses the per-horn
-            qp_planck/NPIPE weight table; ``"PR3"`` uses the SRoll per-detector
-            ``(calib/NEP)^2`` weights for HFI and the Planck-2018 per-horn
-            ``2/(sigma_M^2 + sigma_S^2)`` weights for LFI.
+        data_version: Planck data release the run should emulate. Selects the
+            focal-plane geometry, polarisation efficiency (epsilon) *and*
+            detector map weights together (the beams are common to both
+            releases). ``"NPIPE"`` (default; ``"PR4"`` is an alias) uses the
+            npipe-symmetrized RIMO tables and the per-horn qp_planck/NPIPE
+            weights; ``"PR3"`` uses the HFI_RIMO_R2.00 + LFI_RIMO_R2.50 tables,
+            the SRoll per-detector ``(calib/NEP)^2`` weights for HFI and the
+            Planck-2018 per-horn ``2/(sigma_M^2 + sigma_S^2)`` weights for LFI.
     """
 
     sky_alm: str
     beams_dir: str
-    rimo_file: str
     mission_length: str | None = None
     pointings: str = "inputs/pointings/pointing_"
     flags: str | None = None
     bad_rings_file: str | None = None
     rescale: tuple[float, float, float] = (1.0, 1.0, 1.0)
-    weights: str = "NPIPE"
+    data_version: str = "NPIPE"
 
 
 @dataclass
@@ -199,8 +201,8 @@ def _parse_rescale(value: Any) -> tuple[float, float, float]:
     return tuple(float(x) for x in seq)  # type: ignore[return-value]
 
 
-def _parse_weights(value: Any) -> str:
-    """Parse ``inputs.weights`` into ``"NPIPE"`` or ``"PR3"`` (default ``"NPIPE"``).
+def _parse_data_version(value: Any) -> str:
+    """Parse ``inputs.data_version`` into ``"NPIPE"`` or ``"PR3"`` (default ``"NPIPE"``).
 
     ``"PR4"`` is accepted as an alias for ``"NPIPE"`` (NPIPE is the PR4 release).
     """
@@ -210,7 +212,7 @@ def _parse_weights(value: Any) -> str:
     if w == "PR4":
         return "NPIPE"
     if w not in ("NPIPE", "PR3"):
-        raise ValueError(f"inputs.weights must be 'NPIPE', 'PR4', or 'PR3'; got {value!r}")
+        raise ValueError(f"inputs.data_version must be 'NPIPE', 'PR4', or 'PR3'; got {value!r}")
     return w
 
 
@@ -227,7 +229,6 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
         inputs=InputsConfig(
             sky_alm=data["inputs"]["sky_alm"],
             beams_dir=data["inputs"]["beams_dir"],
-            rimo_file=str(data["inputs"]["rimo_file"]),
             mission_length=(str(data["inputs"].get("mission_length")) if data["inputs"].get("mission_length") is not None else None),
             pointings=str(data["inputs"].get("pointings", "inputs/pointings/pointing_")),
             flags=(str(data["inputs"]["flags"]) if data["inputs"].get("flags") is not None else None),
@@ -237,7 +238,7 @@ def _to_dataclass(data: dict[str, Any]) -> PipelineConfig:
                 else None
             ),
             rescale=_parse_rescale(data["inputs"].get("rescale")),
-            weights=_parse_weights(data["inputs"].get("weights")),
+            data_version=_parse_data_version(data["inputs"].get("data_version")),
         ),
         detector_selection=DetectorSelection(
             channel=channel,

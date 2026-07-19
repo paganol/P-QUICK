@@ -14,7 +14,7 @@ This installs the `pquick-run` console script.
 |-------|-----------|-------|
 | Sky `a_ℓm` | `inputs.sky_alm` | `.fits`, `.npy`, or `.npz`; `[T, E, B]`. |
 | Beam `a_ℓm` | `inputs.beams_dir` | One scalar-beam FITS per detector; resolved by detector name. |
-| RIMO | `inputs.rimo_file` | Provides `phi_uv`/`theta_uv`/`psi_uv`/`psi_pol` and `ε`. |
+| Focal plane | `inputs.data_version` | Built-in per-release tables provide `phi_uv`/`theta_uv`/`psi_uv`/`psi_pol`, `ε` and map weights; no RIMO FITS is read. |
 | Pointing | `inputs.pointings` | Per-OD NPZ, resolved as `{pointings}od_{OD:04d}.npz`. |
 | Flags | `inputs.flags` | Optional per-OD NPZ, `{flags}{freq:03d}ghz_od_{OD:04d}.npz`. |
 | Bad rings | `inputs.bad_rings_file` | Optional TOAST/NPIPE interval text file. |
@@ -36,7 +36,16 @@ the native rate by SLERP. Each pointing NPZ must contain:
 Start from `configs/default.yaml`. Full key list:
 
 ### `inputs`
-- `sky_alm`, `beams_dir`, `rimo_file` — required paths.
+- `sky_alm`, `beams_dir` — required paths.
+- `data_version` — Planck data release to emulate: `NPIPE` (default; `PR4` is an
+  alias) or `PR3`. Selects the focal-plane geometry, the polarisation
+  efficiency `ε`, and the detector map weights together, from built-in tables
+  (`pquick.utilities.FOCAL_PLANE_NPIPE`/`FOCAL_PLANE_PR3` and the weight
+  tables); the beams are common to both releases, so no beam or RIMO file
+  changes. NPIPE tables come from the npipe-symmetrized RIMOs (= `R4.00`); PR3
+  tables from `HFI_RIMO_R2.00` + `LFI_RIMO_R2.50`, with R2.00's orientation
+  (stored there in `PSI_POL`) mapped into `psi_uv` and no pol-axis fine offset,
+  matching the PR3 pipeline. See [methodology](methodology.md#detector-weighting).
 - `mission_length` — OD selector: `full`, `survey 1`…`survey 5`, or an explicit
   range like `91-99`. Default `full`.
 - `pointings` — prefix; pipeline appends `od_{OD:04d}.npz`.
@@ -45,10 +54,6 @@ Start from `configs/default.yaml`. Full key list:
 - `bad_rings_file` — optional bad-ring interval file, applied on top of flags.
 - `rescale` — per-component `(almT, almE, almB)` multipliers. `null` = `(1,1,1)`,
   scalar `s` = `(s,s,s)`, or `[x,y,z]`. E.g. `[0,1,0]` = E-only.
-- `weights` — detector map-weight set: `NPIPE` (default; `PR4` is an alias) for the
-  per-horn qp_planck/NPIPE table, or `PR3` for SRoll per-detector `(calib/NEP)²`
-  (HFI) plus Planck-2018 per-horn `2/(σ_M²+σ_S²)` (LFI). See
-  [methodology](methodology.md#detector-weighting).
 
 ### `detector_selection`
 - `channel` — keep detectors whose name starts with this prefix (e.g. `"100"`), or

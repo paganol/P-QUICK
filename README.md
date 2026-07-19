@@ -26,13 +26,12 @@ Important fields:
 
 1. `inputs.sky_alm`: sky ALM input (`.fits`, `.npy`, `.npz`).
 2. `inputs.beams_dir`: directory with per-detector beam ALM FITS files.
-3. `inputs.rimo_file`: path to the RIMO FITS file.
+3. `inputs.data_version`: Planck data release to emulate — `NPIPE` (default; `PR4` is an alias) or `PR3`. Selects together the focal-plane geometry (`phi_uv`/`theta_uv`/`psi_uv`/`psi_pol`), the polarisation efficiency `epsilon`, and the detector map weights, all from built-in tables in `pquick.utilities` (no RIMO FITS is read; the beams are common to both releases).
 4. `inputs.pointings`: common path prefix for pointing NPZ files (e.g. `inputs/pointings/pointing_`); files are resolved as `{pointings}od_{od:04d}.npz`.
 5. `inputs.mission_length`: OD selector (`full`, `survey 1` ... `survey 5`, or explicit `91-99`). Defaults to `full`.
 6. `inputs.flags`: optional prefix for per-OD flag NPZ files, resolved as `{flags}{freq:03d}ghz_od_{od:04d}.npz`; when unset or a file is missing, all samples are treated as good.
 7. `inputs.bad_rings_file`: optional TOAST/NPIPE-style bad-ring interval text file (`<det_or_ALL> <tstart_s> <tstop_s>` rows), applied on top of the flags.
 8. `inputs.rescale`: optional per-component multipliers for the input sky `(almT, almE, almB)` — `null` = `(1, 1, 1)`, a scalar `s` = `(s, s, s)`, or `[x, y, z]`. Useful for isolating components (e.g. `[0, 1, 0]` = E-only).
-8b. `inputs.weights`: detector map-weight set. `NPIPE` (default; `PR4` is an alias) uses the per-horn qp_planck/NPIPE table; `PR3` uses the SRoll per-detector `(calib/NEP)²` weights for HFI and the Planck-2018 per-horn `2/(σ_M² + σ_S²)` weights for LFI (Eq. 7 / Table 4 of aa33293-18).
 9. `detector_selection`: choose either a channel/detset alias or an explicit detector list.
 10. `convolution.lmax` / `convolution.mmax`: harmonic limits.
 11. `convolution.cache_interpolator`: `true` (default) builds each detector's `ducc0` convolution cube once and reuses it across every OD/chunk on a rank (the cube depends only on the sky, beam, `lmax`, `mmax` and `epsilon` — not on the pointing), removing the dominant per-OD rebuild. One cube is held resident **per detector, on each rank** (~0.4 GB at lmax=1024/mmax=6, ~1–2 GB at lmax=2048), so the cache RAM is about `(selected detectors) × cube` per rank — e.g. a full 143 GHz channel (11 detectors) at lmax=2048 is ~11–22 GB per rank, on top of the map-making accumulator. Set `false` to rebuild per OD for lower memory.
@@ -41,7 +40,7 @@ Important fields:
 14. `map.use_cross_pol`: `true` (default) weights the map-making polarisation by the per-detector `rho = (1-eps)/(1+eps)` from the RIMO (= qp_planck `rhohit: IMO`); `false` assumes ideal detectors (qp_planck `rhohit: Ideal`), which uses the PSB flag — `rho = 1` for polarisation-sensitive detectors and `rho = 0` for unpolarised SWBs (e.g. 143-5/6/7), not `1` for all. Temperature is unaffected.
 15. `resampling.coordinate_system`: pointing frame (`ecliptic` or `galactic`).
 
-The per-detector `psi_uv` is always removed from the beam-shape convolution orientation (kept only in the map-making polarization angle), so a horn's two PSB arms convolve their near-identical beams co-oriented on the sky instead of 90° apart — the scan-relative frame qp_planck uses. Without it the orthogonal arms cancel the channel beam ellipticity and the temperature window is wrong.
+The per-detector `psi_uv` carries the beam ellipse from the Dxx (beam) frame into the common Pxx frame — the beam is rotated by `psi_uv` before convolution and the same angle enters the detector quaternion — so a horn's two PSB arms convolve their near-identical beams co-oriented on the sky instead of 90° apart, the frame qp_planck uses. `psi_pol` is an additional rotation of the polarisation axis only (map-making angle); it does not rotate the beam shape.
 
 ## Run
 
@@ -98,7 +97,7 @@ Notes:
 
 ## Detector weighting
 
-The weight set is chosen by `inputs.weights` (field 8b). Both are explicit per-detector tables (`NPIPE_DETECTOR_WEIGHTS` / `PR3_DETECTOR_WEIGHTS` in `utilities.py`) covering the same detector list, resolved by a single lookup:
+The weight set is chosen by `inputs.data_version`. Both are explicit per-detector tables (`NPIPE_DETECTOR_WEIGHTS` / `PR3_DETECTOR_WEIGHTS` in `utilities.py`) covering the same detector list, resolved by a single lookup:
 
 1. **NPIPE** (default; `PR4` is an alias) — per-horn qp_planck/NPIPE weights, the same value for every arm of a horn (e.g. 100-1a/1b share 100-1; LFI27M/S share LFI27).
 2. **PR3** — per-detector SRoll `(calib/NEP)²` for HFI (a horn's two arms differ), and per-horn Planck-2018 `2/(σ_M² + σ_S²)` (Eq. 7 / Table 4 of aa33293-18) for LFI.

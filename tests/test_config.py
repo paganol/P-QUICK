@@ -10,7 +10,6 @@ def test_load_config_rejects_channel_and_detectors_together(tmp_path: Path):
 inputs:
   sky_alm: inputs/sky/alms_cmb0000.fits
   beams_dir: inputs/beams
-  rimo_file: inputs/RIMOs/RIMO_HFI_npipe5v16_symmetrized.fits
   mission_length: 91-99
   pointings: inputs/pointings/pointing_
   flags: inputs/flags/flags_
@@ -54,7 +53,6 @@ def test_load_config_parses_resampling_centering_options(tmp_path: Path):
 inputs:
   sky_alm: inputs/sky/alms_cmb0000.fits
   beams_dir: inputs/beams
-  rimo_file: inputs/RIMOs/RIMO_HFI_npipe5v16_symmetrized.fits
 
 detector_selection:
   channel: null
@@ -88,7 +86,6 @@ def test_load_config_reads_output_prefix_from_output_section(tmp_path: Path):
 inputs:
   sky_alm: inputs/sky/alms_cmb0000.fits
   beams_dir: inputs/beams
-  rimo_file: inputs/RIMOs/RIMO_HFI_npipe5v16_symmetrized.fits
 
 detector_selection:
   channel: null
@@ -117,7 +114,6 @@ def test_load_config_extended_outputs(tmp_path: Path):
 inputs:
   sky_alm: inputs/sky/alms_cmb0000.fits
   beams_dir: inputs/beams
-  rimo_file: inputs/RIMOs/RIMO_HFI_npipe5v16_symmetrized.fits
 
 detector_selection:
   channel: null
@@ -149,7 +145,6 @@ def test_load_config_defaults_beam_normalization_to_unit_integral(tmp_path: Path
 inputs:
   sky_alm: inputs/sky/alms_cmb0000.fits
   beams_dir: inputs/beams
-  rimo_file: inputs/RIMOs/RIMO_HFI_npipe5v16_symmetrized.fits
 
 detector_selection:
   channel: null

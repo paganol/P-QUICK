@@ -86,7 +86,7 @@ qp_planck scalar-blm run is exactly this construction difference, not a bug.
 ## Detector weighting
 
 Each detector enters the map with an inverse-noise weight `w` (the `N⁻¹` above),
-selected by `inputs.weights`:
+selected by `inputs.data_version`:
 
 - **NPIPE** (default; `PR4` alias) — the per-horn qp_planck/NPIPE weights, applied
   to every arm of a horn.

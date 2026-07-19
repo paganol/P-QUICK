@@ -11,7 +11,7 @@ from astropy.io import fits
 from .config import DetectorSelection
 from .pointing import PointingData
 from .quaternion import normalize_quaternion
-from .utilities import DETSETS
+from .utilities import DETSETS, _FOCAL_PLANES
 
 
 def _required_npz_keys() -> tuple[str, ...]:
@@ -200,13 +200,6 @@ def _pack_truncated_alm(coeff: np.ndarray, ell: np.ndarray, emm: np.ndarray, lma
     return out
 
 
-def _to_text(value: object) -> str:
-    """Convert a FITS scalar value to stripped text."""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="ignore").strip()
-    return str(value).strip()
-
-
 def _rimo_detector_quat(
     phi_uv_deg: float,
     theta_uv_deg: float,
@@ -252,72 +245,44 @@ def _rimo_detector_quat(
     return normalize_quaternion(out)
 
 
-def load_rimo_detectors(rimo_path: str | Path) -> dict[str, dict[str, np.ndarray | float]]:
-    """Read a Planck RIMO FITS table and return per-detector orientation metadata.
+def _detector_record(
+    phi_uv: float, theta_uv: float, psi_uv: float, psi_pol: float, eps: float
+) -> dict[str, np.ndarray | float]:
+    """Build the per-detector metadata dict from focal-plane angles (deg) and epsilon."""
+    return {
+        "phi_uv": phi_uv,
+        "theta_uv": theta_uv,
+        "psi_uv": psi_uv,
+        "psi_pol": psi_pol,
+        "psi_pol_rad": psi_pol * (np.pi / 180.0),
+        "psi_uv_rad": psi_uv * (np.pi / 180.0),
+        "epsilon": eps,
+        # Polarisation efficiency rho = (1 - eps)/(1 + eps); 1.0 for ideal.
+        "rho_pol": (1.0 - eps) / (1.0 + eps),
+        "quat": _rimo_detector_quat(phi_uv, theta_uv, psi_uv, psi_pol),
+    }
 
-    For each detector, the UV-frame angles ``(phi_uv, theta_uv, psi_uv)`` are read
-    (when present) and converted to a unit quaternion stored under the ``"quat"`` key.
+
+def load_rimo_detectors(data_version: str = "NPIPE") -> dict[str, dict[str, np.ndarray | float]]:
+    """Return per-detector orientation metadata (focal-plane angles, epsilon, quaternion).
+
+    Built from the per-release tables in :mod:`pquick.utilities`
+    (``FOCAL_PLANE_NPIPE`` / ``FOCAL_PLANE_PR3``, both stored in the P-QUICK
+    convention: orientation in ``psi_uv``, pol-axis fine offset in ``psi_pol``).
+    No RIMO FITS file is read — this makes wrong-convention RIMOs (e.g.
+    ``HFI_RIMO_R2.00`` raw, which swaps ``PSI_UV``/``PSI_POL``) impossible to
+    load by accident.
 
     Args:
-        rimo_path: Path to the RIMO FITS file.
+        data_version: ``"NPIPE"`` (default), ``"PR4"`` (alias) or ``"PR3"``.
 
     Returns:
         Dict mapping detector name to a metadata dict with keys
-        ``phi_uv``, ``theta_uv``, ``psi_uv``, and ``quat``.
-
-    Raises:
-        ValueError: If no detectors were loaded from the file.
+        ``phi_uv``, ``theta_uv``, ``psi_uv``, ``psi_pol``, ``epsilon``,
+        ``rho_pol`` and ``quat``.
     """
-    out: dict[str, dict[str, np.ndarray | float]] = {}
-    with fits.open(rimo_path) as hdul:
-        # Find the extension that actually holds the per-detector focal-plane pointing,
-        # rather than assuming hdul[1] — official RIMOs (e.g. HFI_RIMO_R3.00) keep these
-        # in a named extension, or may not carry them at all.
-        tab = None
-        for hdu in hdul:
-            cols = getattr(getattr(hdu, "columns", None), "names", None)
-            if cols and {"PHI_UV", "THETA_UV", "PSI_UV"} <= {n.upper() for n in cols}:
-                tab = hdu.data
-                break
-        if tab is None:
-            exts = [(i, h.name, list(getattr(getattr(h, "columns", None), "names", []) or [])) for i, h in enumerate(hdul)]
-            raise ValueError(
-                f"No extension with PHI_UV/THETA_UV/PSI_UV columns in RIMO {rimo_path}. "
-                f"P-QUICK needs per-detector focal-plane pointing (the npipe-symmetrized "
-                f"RIMO provides it). Extensions found: {exts}"
-            )
-        names = [n.upper() for n in tab.columns.names]
-
-        det_col = "DETECTOR" if "DETECTOR" in names else names[0]
-        has_phi = "PHI_UV" in names
-        has_theta = "THETA_UV" in names
-        has_psi = "PSI_UV" in names
-        has_psi_pol = "PSI_POL" in names
-        has_eps = "EPSILON" in names
-
-        for row in tab:
-            det = _to_text(row[det_col])
-            rec: dict[str, np.ndarray | float] = {}
-            if has_phi and has_theta and has_psi:
-                phi_uv = float(row["PHI_UV"])
-                theta_uv = float(row["THETA_UV"])
-                psi_uv = float(row["PSI_UV"])
-                psi_pol = float(row["PSI_POL"]) if has_psi_pol else 0.0
-                eps = float(row["EPSILON"]) if has_eps else 0.0
-                rec["phi_uv"] = phi_uv
-                rec["theta_uv"] = theta_uv
-                rec["psi_uv"] = psi_uv
-                rec["psi_pol"] = psi_pol
-                rec["psi_pol_rad"] = psi_pol * (np.pi / 180.0)
-                rec["psi_uv_rad"] = psi_uv * (np.pi / 180.0)
-                rec["epsilon"] = eps
-                # Polarisation efficiency rho = (1 - eps)/(1 + eps); 1.0 for ideal.
-                rec["rho_pol"] = (1.0 - eps) / (1.0 + eps)
-                rec["quat"] = _rimo_detector_quat(phi_uv, theta_uv, psi_uv, psi_pol)
-            out[det] = rec
-    if not out:
-        raise ValueError(f"No detectors loaded from RIMO file: {rimo_path}")
-    return out
+    table = _FOCAL_PLANES[data_version.strip().upper()]
+    return {det: _detector_record(*vals) for det, vals in table.items()}
 
 
 def select_detectors(all_detectors: list[str], selection: DetectorSelection) -> list[str]:
